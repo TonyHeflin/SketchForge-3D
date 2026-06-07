@@ -4,10 +4,6 @@ SketchForge is a local-first browser 3D editor for building, grouping, cutting, 
 
 It is built around a simple idea: open the app, place shapes, turn some shapes into holes, group the result, import external STL models when primitives are not enough, and export the finished design without needing an account.
 
-<p align="center">
-  <img src="public/assets/sketchforge/sketchforge-logo.png" alt="SketchForge logo" width="180" />
-</p>
-
 ![A red block placed in the SketchForge editor](docs/media/editor-block.png)
 
 ## Contents
