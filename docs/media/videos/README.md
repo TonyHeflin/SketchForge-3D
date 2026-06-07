@@ -2,6 +2,13 @@
 
 Record short clips for the main README. Aim for 10-30 seconds per clip.
 
+The first clip is already included:
+
+```text
+01-create-and-edit-block.mp4
+01-create-and-edit-block-preview.gif
+```
+
 Use these filenames:
 
 ```text

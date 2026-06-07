@@ -161,9 +161,13 @@ The dashboard is the project home screen. It supports:
 
 ## Media And Demo Videos
 
-The README already includes the first hero photo: a block placed in the editor.
+The README starts with a real editor screenshot, and the first demo video is included below.
 
-The next step is to record short feature videos. Keep them short, direct, and without long pauses. Ten to thirty seconds each is enough.
+![SketchForge editor demo preview](docs/media/videos/01-create-and-edit-block-preview.gif)
+
+Full video: [docs/media/videos/01-create-and-edit-block.mp4](docs/media/videos/01-create-and-edit-block.mp4)
+
+Future clips should stay short, direct, and without long pauses. Ten to thirty seconds each is enough.
 
 Put finished clips in:
 
