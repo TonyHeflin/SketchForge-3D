@@ -121,6 +121,7 @@ type WorkplaneViewportProps = {
   onMirrorSelection: (axis: AlignAxis) => void;
   onSelectShape: (id: string | string[] | null, mode?: "replace" | "toggle") => void;
   onSetPlacementElevation: (elevation: number, source: "shape" | "base") => void;
+  onInteractionActiveChange?: (active: boolean) => void;
   onUpdateShape: (id: string, patch: Partial<WorkplaneShape>) => void;
   onWorkplaneModeChange: (active: boolean) => void;
 };
@@ -143,6 +144,7 @@ type ThreeState = {
   wasCameraMoving: boolean;
   lastOverlaySync: number;
   lastViewCubeSync: number;
+  rotationHandleSides: RotationHandleSides | null;
   disposeInteractionListeners: () => void;
   resize: () => void;
 };
@@ -190,6 +192,8 @@ type MarqueeState = {
 
 type TransformHandleKind = "scale" | "height" | "lift" | "rotate";
 type RotationAxis = "x" | "y" | "z";
+type RotationHandleSide = "near" | "right" | "far" | "left";
+type RotationHandleSides = Record<RotationAxis, RotationHandleSide>;
 type TransformDragState = {
   id: string;
   ids: string[];
@@ -210,6 +214,7 @@ type TransformDragState = {
   scalePlaneY: number;
   rotationAxisVector?: THREE.Vector3;
   rotationPivot?: THREE.Vector3;
+  rotationPlaneCenter?: THREE.Vector3;
   rotationStartVector?: THREE.Vector3;
   rotationScreenCenter?: { x: number; y: number };
   rotationScreenSign?: number;
@@ -234,6 +239,8 @@ type TransformOverlayState = {
   rotateHandles: Array<{ key: string; className: string; x: number; y: number; angle: number }>;
   dimensions: Record<string, DimensionMark[]>;
   rotationWheel: { x: number; y: number; radius: number } | null;
+  rotationWheels: Record<RotationAxis, { x: number; y: number; radius: number }>;
+  rotationPlaneCenters: Record<RotationAxis, { x: number; y: number; z: number }>;
   rotationPlanes: Record<RotationAxis, RotationPlaneView>;
 };
 
@@ -331,10 +338,6 @@ function isVerticalMeasureHandleKind(kind: TransformHandleKind) {
   return kind === "height" || kind === "lift";
 }
 
-function isHeightMeasureKey(key: string | null) {
-  return key === "top-height" || key === "bottom-height";
-}
-
 function getElevationMeasureKey(overlay: TransformOverlayState | null) {
   return (
     Object.values(overlay?.dimensions ?? {})
@@ -344,7 +347,13 @@ function getElevationMeasureKey(overlay: TransformOverlayState | null) {
 }
 
 function measureKeyForHandle(kind: TransformHandleKind, handleKey: string, overlay: TransformOverlayState | null) {
-  return isVerticalMeasureHandleKind(kind) ? (getElevationMeasureKey(overlay) ?? handleKey) : handleKey;
+  if (kind === "lift") {
+    return getElevationMeasureKey(overlay) ?? handleKey;
+  }
+  if (kind === "height") {
+    return null;
+  }
+  return handleKey;
 }
 
 function previewShapesForDrag(shapes: WorkplaneShape[], drag: DragState | null) {
@@ -444,10 +453,10 @@ function unwrapRadians(value: number) {
 }
 
 function rotationAxisForHandle(handleKey: string): RotationAxis {
-  if (handleKey.endsWith("-x") || handleKey === "rotate-right") {
+  if (handleKey.endsWith("-x") || handleKey === "rotate-left") {
     return "x";
   }
-  if (handleKey.endsWith("-z") || handleKey === "rotate-left") {
+  if (handleKey.endsWith("-z") || handleKey === "rotate-right") {
     return "z";
   }
   return "y";
@@ -648,8 +657,10 @@ function boundsIntersectRect(bounds: NonNullable<ReturnType<typeof shapeScreenBo
   return bounds.maxX >= rect.left && bounds.minX <= rect.right && bounds.maxY >= rect.top && bounds.minY <= rect.bottom;
 }
 
-function rotationAxisVectorForFrame(handleKey: string, _frame: SelectionFrame) {
-  return rotationAxisVector(rotationAxisForHandle(handleKey));
+function rotationAxisVectorForFrame(handleKey: string, frame: SelectionFrame) {
+  const axis = rotationAxisForHandle(handleKey);
+  void frame;
+  return rotationAxisVector(axis);
 }
 
 function rayPointOnRotationPlane(state: ThreeState, clientX: number, clientY: number, pivot: THREE.Vector3, axis: THREE.Vector3) {
@@ -669,6 +680,68 @@ function signedAngleAroundAxis(start: THREE.Vector3, current: THREE.Vector3, axi
 
 function screenVectorAngle(from: { x: number; y: number }, to: { x: number; y: number }) {
   return THREE.MathUtils.radToDeg(Math.atan2(to.y - from.y, to.x - from.x));
+}
+
+const ROTATION_HANDLE_SIDE_HYSTERESIS = 0.22;
+const ROTATION_HANDLE_DOMINANCE_HYSTERESIS = 0.18;
+
+function signedRotationSide(value: number, previous: RotationHandleSide | undefined, positiveSide: RotationHandleSide, negativeSide: RotationHandleSide) {
+  if (previous === positiveSide && value > -ROTATION_HANDLE_SIDE_HYSTERESIS) {
+    return previous;
+  }
+  if (previous === negativeSide && value < ROTATION_HANDLE_SIDE_HYSTERESIS) {
+    return previous;
+  }
+  return value >= 0 ? positiveSide : negativeSide;
+}
+
+function rotationSideScore(side: RotationHandleSide, viewX: number, viewZ: number) {
+  if (side === "right") {
+    return viewX;
+  }
+  if (side === "left") {
+    return -viewX;
+  }
+  if (side === "near") {
+    return viewZ;
+  }
+  return -viewZ;
+}
+
+function dominantRotationSide(viewX: number, viewZ: number, previous: RotationHandleSide | undefined) {
+  const sides: RotationHandleSide[] = ["near", "right", "far", "left"];
+  const best = sides.reduce(
+    (current, side) => {
+      const score = rotationSideScore(side, viewX, viewZ);
+      return score > current.score ? { side, score } : current;
+    },
+    { side: "near" as RotationHandleSide, score: Number.NEGATIVE_INFINITY },
+  );
+
+  if (previous && rotationSideScore(previous, viewX, viewZ) >= best.score - ROTATION_HANDLE_DOMINANCE_HYSTERESIS) {
+    return previous;
+  }
+  return best.side;
+}
+
+function rotationHandleSidesForCamera(state: ThreeState, center: THREE.Vector3) {
+  const view = state.camera.position.clone().sub(center);
+  view.y = 0;
+  const length = view.length();
+  if (length < 0.0001) {
+    return state.rotationHandleSides ?? { x: "right", y: "near", z: "near" };
+  }
+
+  const viewX = view.x / length;
+  const viewZ = view.z / length;
+  const previous = state.rotationHandleSides ?? undefined;
+  const next: RotationHandleSides = {
+    x: signedRotationSide(viewX, previous?.x, "right", "left"),
+    y: dominantRotationSide(viewX, viewZ, previous?.y),
+    z: signedRotationSide(viewZ, previous?.z, "near", "far"),
+  };
+  state.rotationHandleSides = next;
+  return next;
 }
 
 function projectedWorldYForScreenY(state: ThreeState, shape: WorkplaneShape, targetScreenY: number, startWorldY: number) {
@@ -842,6 +915,7 @@ export function WorkplaneViewport({
   onMirrorSelection,
   onSelectShape,
   onSetPlacementElevation,
+  onInteractionActiveChange,
   onUpdateShape,
   onWorkplaneModeChange,
 }: WorkplaneViewportProps) {
@@ -1167,20 +1241,28 @@ export function WorkplaneViewport({
       const yStart = handlesLowerSide ? yBounds.min : yBounds.max;
       const liftOffset = kind === "lift" ? Math.max(2, yBounds.height * 0.08) * (handlesLowerSide ? -1 : 1) : 0;
       const startWorldY = yStart + liftOffset;
-      const wheel = transformOverlayRef.current?.rotationWheel ?? undefined;
+      const overlay = transformOverlayRef.current;
+      const wheel = kind === "rotate" ? (overlay?.rotationWheels[rotationAxis] ?? overlay?.rotationWheel ?? undefined) : undefined;
+      const rotationPlaneCenterData = kind === "rotate" ? overlay?.rotationPlaneCenters[rotationAxis] : undefined;
+      const rotationPlaneCenter = rotationPlaneCenterData
+        ? new THREE.Vector3(rotationPlaneCenterData.x, rotationPlaneCenterData.y, rotationPlaneCenterData.z)
+        : frame.center.clone();
       const rect = state?.renderer.domElement.getBoundingClientRect();
       const localClientX = rect ? event.clientX - rect.left : event.clientX;
       const localClientY = rect ? event.clientY - rect.top : event.clientY;
       const axisVector = rotationAxisVectorForFrame(handleKey, frame);
       const pivot = frame.center.clone();
       const rotationCenter = kind === "rotate" ? wheel ?? (state ? projectToScreen(pivot, state) : { x: localClientX, y: localClientY }) : undefined;
-      const rotationStartPoint = kind === "rotate" && state ? rayPointOnRotationPlane(state, event.clientX, event.clientY, pivot, axisVector) : null;
-      const rotationStartVector = rotationStartPoint ? rotationStartPoint.sub(pivot) : undefined;
+      const rotationStartPoint = kind === "rotate" && state ? rayPointOnRotationPlane(state, event.clientX, event.clientY, rotationPlaneCenter, axisVector) : null;
+      const rotationStartVector = rotationStartPoint ? rotationStartPoint.sub(rotationPlaneCenter) : undefined;
       event.preventDefault();
       event.stopPropagation();
       event.currentTarget.setPointerCapture(event.pointerId);
       setEditingRotation(null);
       setPinnedMeasureKey(measureKeyForHandle(kind, handleKey, transformOverlayRef.current));
+      if (kind === "height") {
+        setHoverMeasureKey(null);
+      }
       setActiveRotationWheel(kind === "rotate");
       setActiveTransformKind(kind);
       if (kind === "rotate") {
@@ -1214,6 +1296,7 @@ export function WorkplaneViewport({
         scalePlaneY: kind === "scale" ? yBounds.min : 0,
         rotationAxisVector: kind === "rotate" ? axisVector : undefined,
         rotationPivot: kind === "rotate" ? pivot : undefined,
+        rotationPlaneCenter: kind === "rotate" ? rotationPlaneCenter : undefined,
         rotationStartVector: kind === "rotate" ? rotationStartVector : undefined,
         rotationScreenCenter: rotationCenter,
         rotationScreenSign: kind === "rotate" && state ? rotationScreenSign(axisVector, state.camera) : 1,
@@ -1241,8 +1324,9 @@ export function WorkplaneViewport({
       if (state) {
         state.controls.enabled = false;
       }
+      onInteractionActiveChange?.(true);
     },
-    [],
+    [onInteractionActiveChange],
   );
 
   const updateTransform = useCallback(
@@ -1351,10 +1435,11 @@ export function WorkplaneViewport({
       const localClientY = clientY - rect.top;
       const axisVector = (transform.rotationAxisVector ?? rotationAxisVectorForFrame(transform.handleKey, transform.selectionFrame)).clone().normalize();
       const pivot = transform.rotationPivot ?? transform.selectionFrame.center;
-      const currentPoint = rayPointOnRotationPlane(state, clientX, clientY, pivot, axisVector);
+      const planeCenter = transform.rotationPlaneCenter ?? pivot;
+      const currentPoint = rayPointOnRotationPlane(state, clientX, clientY, planeCenter, axisVector);
       const rawDelta =
         currentPoint && transform.rotationStartVector && transform.rotationStartVector.lengthSq() > 0.000001
-          ? THREE.MathUtils.radToDeg(signedAngleAroundAxis(transform.rotationStartVector, currentPoint.sub(pivot), axisVector))
+          ? THREE.MathUtils.radToDeg(signedAngleAroundAxis(transform.rotationStartVector, currentPoint.sub(planeCenter), axisVector))
           : THREE.MathUtils.radToDeg(unwrapRadians(screenAngle(localClientX, localClientY, rotationCenter) - transform.startScreenAngle)) * (transform.rotationScreenSign ?? 1);
       const distance = transform.wheelCenter ? Math.hypot(localClientX - transform.wheelCenter.x, localClientY - transform.wheelCenter.y) : Number.POSITIVE_INFINITY;
       let delta: number;
@@ -1407,8 +1492,11 @@ export function WorkplaneViewport({
     if (event.currentTarget.hasPointerCapture(transform.pointerId)) {
       event.currentTarget.releasePointerCapture(transform.pointerId);
     }
-    if (isVerticalMeasureHandleKind(transform.kind)) {
+    if (transform.kind === "lift") {
       setPinnedMeasureKey(getElevationMeasureKey(transformOverlayRef.current));
+    } else if (transform.kind === "height") {
+      setPinnedMeasureKey(null);
+      setHoverMeasureKey(null);
     }
     if (transform.kind === "lift" && transform.hasMoved) {
       suppressLiftEditAfterDrag();
@@ -1420,7 +1508,8 @@ export function WorkplaneViewport({
     if (threeRef.current) {
       threeRef.current.controls.enabled = true;
     }
-  }, [suppressLiftEditAfterDrag]);
+    onInteractionActiveChange?.(false);
+  }, [onInteractionActiveChange, suppressLiftEditAfterDrag]);
 
   const beginDimensionEdit = useCallback((mark: DimensionMark) => {
     if (mark.axis === "height") {
@@ -1633,19 +1722,27 @@ export function WorkplaneViewport({
         const yStart = handlesLowerSide ? yBounds.min : yBounds.max;
         const liftOffset = handle.kind === "lift" ? Math.max(2, yBounds.height * 0.08) * (handlesLowerSide ? -1 : 1) : 0;
         const startWorldY = yStart + liftOffset;
-        const wheel = transformOverlayRef.current?.rotationWheel ?? undefined;
+        const overlay = transformOverlayRef.current;
         const rotationAxis = rotationAxisForHandle(handle.handleKey);
+        const wheel = handle.kind === "rotate" ? (overlay?.rotationWheels[rotationAxis] ?? overlay?.rotationWheel ?? undefined) : undefined;
+        const rotationPlaneCenterData = handle.kind === "rotate" ? overlay?.rotationPlaneCenters[rotationAxis] : undefined;
+        const rotationPlaneCenter = rotationPlaneCenterData
+          ? new THREE.Vector3(rotationPlaneCenterData.x, rotationPlaneCenterData.y, rotationPlaneCenterData.z)
+          : frame.center.clone();
         const localClientX = event.clientX - rect.left;
         const localClientY = event.clientY - rect.top;
         const axisVector = rotationAxisVectorForFrame(handle.handleKey, frame);
         const pivot = frame.center.clone();
         const rotationCenter = handle.kind === "rotate" ? wheel ?? projectToScreen(pivot, state) : undefined;
-        const rotationStartPoint = handle.kind === "rotate" ? rayPointOnRotationPlane(state, event.clientX, event.clientY, pivot, axisVector) : null;
-        const rotationStartVector = rotationStartPoint ? rotationStartPoint.sub(pivot) : undefined;
+        const rotationStartPoint = handle.kind === "rotate" ? rayPointOnRotationPlane(state, event.clientX, event.clientY, rotationPlaneCenter, axisVector) : null;
+        const rotationStartVector = rotationStartPoint ? rotationStartPoint.sub(rotationPlaneCenter) : undefined;
         event.preventDefault();
         event.currentTarget.setPointerCapture(event.pointerId);
         setEditingRotation(null);
         setPinnedMeasureKey(measureKeyForHandle(handle.kind, handle.handleKey, transformOverlayRef.current));
+        if (handle.kind === "height") {
+          setHoverMeasureKey(null);
+        }
         setActiveRotationWheel(handle.kind === "rotate");
         setActiveTransformKind(handle.kind);
         if (handle.kind === "rotate") {
@@ -1679,6 +1776,7 @@ export function WorkplaneViewport({
           scalePlaneY: handle.kind === "scale" ? handle.planeY : 0,
           rotationAxisVector: handle.kind === "rotate" ? axisVector : undefined,
           rotationPivot: handle.kind === "rotate" ? pivot : undefined,
+          rotationPlaneCenter: handle.kind === "rotate" ? rotationPlaneCenter : undefined,
           rotationStartVector: handle.kind === "rotate" ? rotationStartVector : undefined,
           rotationScreenCenter: rotationCenter,
           rotationScreenSign: handle.kind === "rotate" ? rotationScreenSign(axisVector, state.camera) : 1,
@@ -1702,6 +1800,7 @@ export function WorkplaneViewport({
           setRotationReadout(null);
         }
         state.controls.enabled = false;
+        onInteractionActiveChange?.(true);
         return;
       }
 
@@ -1723,6 +1822,7 @@ export function WorkplaneViewport({
         };
         setMarqueeFromState(marqueeRef.current);
         state.controls.enabled = false;
+        onInteractionActiveChange?.(true);
         return;
       }
 
@@ -1787,8 +1887,20 @@ export function WorkplaneViewport({
         items,
       };
       state.controls.enabled = false;
+      onInteractionActiveChange?.(true);
     },
-    [onAlignAnchorChange, onSelectShape, onSetPlacementElevation, onWorkplaneModeChange, pickShape, pickTransformHandle, setMarqueeFromState, toPlanePoint, toPlanePointAtY],
+    [
+      onAlignAnchorChange,
+      onInteractionActiveChange,
+      onSelectShape,
+      onSetPlacementElevation,
+      onWorkplaneModeChange,
+      pickShape,
+      pickTransformHandle,
+      setMarqueeFromState,
+      toPlanePoint,
+      toPlanePointAtY,
+    ],
   );
 
   const handlePointerMove = useCallback(
@@ -1869,8 +1981,11 @@ export function WorkplaneViewport({
         if (event.currentTarget.hasPointerCapture(transform.pointerId)) {
           event.currentTarget.releasePointerCapture(transform.pointerId);
         }
-        if (isVerticalMeasureHandleKind(transform.kind)) {
+        if (transform.kind === "lift") {
           setPinnedMeasureKey(getElevationMeasureKey(transformOverlayRef.current));
+        } else if (transform.kind === "height") {
+          setPinnedMeasureKey(null);
+          setHoverMeasureKey(null);
         }
         if (transform.kind === "lift" && transform.hasMoved) {
           suppressLiftEditAfterDrag();
@@ -1882,6 +1997,7 @@ export function WorkplaneViewport({
         if (state) {
           state.controls.enabled = true;
         }
+        onInteractionActiveChange?.(false);
         return;
       }
 
@@ -1917,6 +2033,7 @@ export function WorkplaneViewport({
         if (state) {
           state.controls.enabled = true;
         }
+        onInteractionActiveChange?.(false);
         return;
       }
 
@@ -1943,8 +2060,9 @@ export function WorkplaneViewport({
       if (state) {
         state.controls.enabled = true;
       }
+      onInteractionActiveChange?.(false);
     },
-    [onSelectShape, onUpdateShape, setMarqueeFromState, shapesInMarquee, suppressLiftEditAfterDrag],
+    [onInteractionActiveChange, onSelectShape, onUpdateShape, setMarqueeFromState, shapesInMarquee, suppressLiftEditAfterDrag],
   );
 
   const handleDrop = useCallback(
@@ -2071,10 +2189,9 @@ export function WorkplaneViewport({
               rotationReadout={rotationReadout}
               showRotationWheel={activeRotationWheel}
               hideDimensionMarks={
+                activeTransformKind === "scale" ||
                 activeTransformKind === "height" ||
-                activeTransformKind === "lift" ||
-                editingDimension?.axis === "height" ||
-                editingDimension?.axis === "elevation"
+                editingDimension?.axis === "height"
               }
               rotationWheelAxis={rotationWheelAxis}
               onBeginTransform={beginTransform}
@@ -2453,10 +2570,10 @@ function TransformOverlay({
     .filter((mark) => mark.axis === "elevation");
   const elevationHandleKey = elevationMarks[0]?.handleKey;
   const rawMarks = measureKey ? (box.dimensions[measureKey] ?? []) : [];
-  const requestedHeightMeasurement = isHeightMeasureKey(measureKey) || rawMarks.some((mark) => mark.axis === "height");
+  const requestedHeightMeasurement = rawMarks.some((mark) => mark.axis === "height");
   const resolvedMeasureKey = requestedHeightMeasurement && elevationHandleKey ? elevationHandleKey : measureKey;
   const marks = resolvedMeasureKey ? (box.dimensions[resolvedMeasureKey] ?? []) : [];
-  const visibleMarks = (hideDimensionMarks || requestedHeightMeasurement ? elevationMarks : marks).filter(
+  const visibleMarks = (hideDimensionMarks ? [] : requestedHeightMeasurement ? elevationMarks : marks).filter(
     (mark) => mark.axis !== "height" && mark.key !== editingDimension?.key,
   );
   const handleMeasureKey = (handle: TransformOverlayState["handles"][number]) => measureKeyForHandle(handle.kind, handle.key, box);
@@ -2482,9 +2599,10 @@ function TransformOverlay({
     y: Math.sin(activeRadians) * 92,
   };
   const plane = box.rotationPlanes[rotationWheelAxis];
+  const wheel = box.rotationWheels[rotationWheelAxis] ?? box.rotationWheel;
   return (
     <div className="transform-overlay" aria-hidden="true">
-      {showRotationWheel && box.rotationWheel && plane ? (
+      {showRotationWheel && wheel && plane ? (
         <svg
           className={`rotation-protractor-plane axis-${rotationWheelAxis}`}
           viewBox={`0 0 ${box.width} ${box.height}`}
@@ -2590,7 +2708,7 @@ function TransformOverlay({
           className={`transform-handle ${handle.className}`}
           style={{ "--overlay-x": `${handle.x}px`, "--overlay-y": `${handle.y}px` } as CSSProperties}
           title={handle.title}
-          onPointerEnter={() => onHoverMeasure(handleMeasureKey(handle))}
+          onPointerEnter={() => onHoverMeasure(handle.kind === "lift" ? null : handleMeasureKey(handle))}
           onPointerLeave={() => onHoverMeasure(null)}
           onPointerDown={(event) => {
             onPinMeasure(handleMeasureKey(handle));
@@ -3195,6 +3313,7 @@ function createThreeScene(host: HTMLDivElement): ThreeState {
     wasCameraMoving: false,
     lastOverlaySync: 0,
     lastViewCubeSync: 0,
+    rotationHandleSides: null,
     disposeInteractionListeners: () => {},
     resize,
   };
@@ -3448,6 +3567,18 @@ function makeDimensionMark(
   };
 }
 
+function updateTransformOverlayIfChanged(
+  overlayRef: MutableRefObject<TransformOverlayState | null>,
+  setOverlay: Dispatch<SetStateAction<TransformOverlayState | null>>,
+  next: TransformOverlayState,
+) {
+  if (overlayRef.current && JSON.stringify(overlayRef.current) === JSON.stringify(next)) {
+    return;
+  }
+  overlayRef.current = next;
+  setOverlay(next);
+}
+
 function syncTransformOverlay(
   state: ThreeState,
   shapes: WorkplaneShape[],
@@ -3520,7 +3651,9 @@ function syncTransformOverlay(
   const worldMinZ = Math.min(...corners.map((corner) => corner.z));
   const worldMaxZ = Math.max(...corners.map((corner) => corner.z));
   const worldCenterX = (worldMinX + worldMaxX) / 2;
+  const worldCenterY = (worldMinY + worldMaxY) / 2;
   const worldCenterZ = (worldMinZ + worldMaxZ) / 2;
+  const worldCenter = new THREE.Vector3(worldCenterX, worldCenterY, worldCenterZ);
   const worldHeight = Math.max(MIN_SHAPE_SIZE, worldMaxY - worldMinY);
   const liftOffset = Math.max(2, worldHeight * 0.08);
   const verticalBase = new THREE.Vector3(worldCenterX, worldMinY, worldCenterZ);
@@ -3532,6 +3665,7 @@ function syncTransformOverlay(
   // bounding box. Do not switch this to screen-space bounds or the object's
   // tilted local bottom face; both make tilted shapes look disconnected.
   const xFootAxis = new THREE.Vector3(1, 0, 0);
+  const yFootAxis = new THREE.Vector3(0, 1, 0);
   const zFootAxis = new THREE.Vector3(0, 0, 1);
   const footprintWorld = {
     nearLeft: new THREE.Vector3(worldMinX, worldMinY, worldMaxZ),
@@ -3549,18 +3683,6 @@ function syncTransformOverlay(
     farRight: project(footprintWorld.farRight),
     farLeft: project(footprintWorld.farLeft),
   };
-  const topWorld = {
-    nearLeft: new THREE.Vector3(worldMinX, worldMaxY, worldMaxZ),
-    nearRight: new THREE.Vector3(worldMaxX, worldMaxY, worldMaxZ),
-    farRight: new THREE.Vector3(worldMaxX, worldMaxY, worldMinZ),
-    farLeft: new THREE.Vector3(worldMinX, worldMaxY, worldMinZ),
-  };
-  const top = {
-    nearLeft: project(topWorld.nearLeft),
-    nearRight: project(topWorld.nearRight),
-    farRight: project(topWorld.farRight),
-    farLeft: project(topWorld.farLeft),
-  };
   const mid = {
     near: project(footprintWorld.near),
     right: project(footprintWorld.right),
@@ -3571,7 +3693,7 @@ function syncTransformOverlay(
   const topPoint = project(verticalTop);
   const heightPoint = project(heightHandle);
   const liftPoint = project(liftHandle);
-  const centerPoint = project(frame.center);
+  const centerPoint = project(worldCenter);
   const footprintGuides = [
     { x1: bottom.nearLeft.x, y1: bottom.nearLeft.y, x2: bottom.nearRight.x, y2: bottom.nearRight.y },
     { x1: bottom.nearRight.x, y1: bottom.nearRight.y, x2: bottom.farRight.x, y2: bottom.farRight.y },
@@ -3623,58 +3745,63 @@ function syncTransformOverlay(
       y: point.y + (dy / length) * distance,
     };
   };
-  const screenMidpoint = (a: { x: number; y: number }, b: { x: number; y: number }) => ({
-    x: (a.x + b.x) / 2,
-    y: (a.y + b.y) / 2,
-  });
-  const topCornerScreens = [top.nearLeft, top.nearRight, top.farRight, top.farLeft]
-    .slice()
-    .sort((a, b) => a.y - b.y)
-    .slice(0, 2)
-    .sort((a, b) => a.x - b.x);
-  const topEdgeCenter = topCornerScreens.length === 2 ? screenMidpoint(topCornerScreens[0], topCornerScreens[1]) : screenMidpoint(top.farLeft, top.farRight);
-  const verticalEdgeCenters = [
-    screenMidpoint(top.nearLeft, bottom.nearLeft),
-    screenMidpoint(top.nearRight, bottom.nearRight),
-    screenMidpoint(top.farRight, bottom.farRight),
-    screenMidpoint(top.farLeft, bottom.farLeft),
-  ];
-  const rightEdgeCenter = verticalEdgeCenters.reduce((rightmost, point) => (point.x > rightmost.x ? point : rightmost));
-  const bottomEdgeCenters = [
-    screenMidpoint(bottom.nearLeft, bottom.nearRight),
-    screenMidpoint(bottom.nearRight, bottom.farRight),
-    screenMidpoint(bottom.farRight, bottom.farLeft),
-    screenMidpoint(bottom.farLeft, bottom.nearLeft),
-  ];
-  const lowerEdgeCenter = bottomEdgeCenters.reduce((lowest, point) => (point.y > lowest.y ? point : lowest));
-  const rotateLeft = screenOffsetFromCenter(topEdgeCenter, 24);
-  const rotateRight = screenOffsetFromCenter(rightEdgeCenter, 26);
-  const rotateBottom = screenOffsetFromCenter(lowerEdgeCenter, 34);
-  const planeRadius = 112;
+  const rotationSides = rotationHandleSidesForCamera(state, worldCenter);
+  const sidePoint = (side: RotationHandleSide, y: number) => {
+    if (side === "right") {
+      return new THREE.Vector3(worldMaxX, y, worldCenterZ);
+    }
+    if (side === "left") {
+      return new THREE.Vector3(worldMinX, y, worldCenterZ);
+    }
+    if (side === "near") {
+      return new THREE.Vector3(worldCenterX, y, worldMaxZ);
+    }
+    return new THREE.Vector3(worldCenterX, y, worldMinZ);
+  };
+  const rotateLeft = screenOffsetFromCenter(project(sidePoint(rotationSides.x, worldMaxY)), 24);
+  const rotateRight = screenOffsetFromCenter(project(sidePoint(rotationSides.z, worldMaxY)), 28);
+  const rotateBottom = screenOffsetFromCenter(project(sidePoint(rotationSides.y, worldMinY)), 34);
+  const xFaceCenter = sidePoint(rotationSides.x, worldCenterY);
+  const zFaceCenter = sidePoint(rotationSides.z, worldCenterY);
+  const yFaceCenter = sidePoint(rotationSides.y, worldMinY);
+  const planeRadius = 154;
   const planeWorldStep = Math.max(12, Math.max(frame.width, frame.depth, frame.height) * 0.78);
-  const worldXAxis = new THREE.Vector3(1, 0, 0);
-  const worldYAxis = new THREE.Vector3(0, 1, 0);
-  const worldZAxis = new THREE.Vector3(0, 0, 1);
-  const makePlaneView = (uAxis: THREE.Vector3, vAxis: THREE.Vector3): RotationPlaneView => {
-    const u = project(frame.center.clone().add(uAxis.clone().multiplyScalar(planeWorldStep)));
-    const v = project(frame.center.clone().add(vAxis.clone().multiplyScalar(planeWorldStep)));
-    const du = { x: u.x - centerPoint.x, y: u.y - centerPoint.y };
-    const dv = { x: v.x - centerPoint.x, y: v.y - centerPoint.y };
+  const makePlaneView = (centerWorld: THREE.Vector3, uAxis: THREE.Vector3, vAxis: THREE.Vector3): RotationPlaneView => {
+    const screenCenter = project(centerWorld);
+    const u = project(centerWorld.clone().add(uAxis.clone().multiplyScalar(planeWorldStep)));
+    const v = project(centerWorld.clone().add(vAxis.clone().multiplyScalar(planeWorldStep)));
+    const du = { x: u.x - screenCenter.x, y: u.y - screenCenter.y };
+    const dv = { x: v.x - screenCenter.x, y: v.y - screenCenter.y };
     const longest = Math.max(12, Math.hypot(du.x, du.y), Math.hypot(dv.x, dv.y));
     const scale = planeRadius / longest / 100;
     return {
-      x: centerPoint.x,
-      y: centerPoint.y,
+      x: screenCenter.x,
+      y: screenCenter.y,
       a: du.x * scale,
       b: du.y * scale,
       c: dv.x * scale,
       d: dv.y * scale,
     };
   };
-  const rotationPlanes = {
-    x: makePlaneView(worldZAxis, worldYAxis),
-    y: makePlaneView(worldXAxis, worldZAxis),
-    z: makePlaneView(worldXAxis, worldYAxis),
+  const makeWheel = (centerWorld: THREE.Vector3) => {
+    const screenCenter = project(centerWorld);
+    return { x: screenCenter.x, y: screenCenter.y, radius: planeRadius };
+  };
+  const makeWorldPoint = (point: THREE.Vector3) => ({ x: point.x, y: point.y, z: point.z });
+  const rotationWheels: Record<RotationAxis, { x: number; y: number; radius: number }> = {
+    x: makeWheel(xFaceCenter),
+    y: makeWheel(yFaceCenter),
+    z: makeWheel(zFaceCenter),
+  };
+  const rotationPlaneCenters: Record<RotationAxis, { x: number; y: number; z: number }> = {
+    x: makeWorldPoint(xFaceCenter),
+    y: makeWorldPoint(yFaceCenter),
+    z: makeWorldPoint(zFaceCenter),
+  };
+  const rotationPlanes: Record<RotationAxis, RotationPlaneView> = {
+    x: makePlaneView(xFaceCenter, zFootAxis, yFootAxis),
+    y: makePlaneView(yFaceCenter, xFootAxis, zFootAxis),
+    z: makePlaneView(zFaceCenter, xFootAxis, yFootAxis),
   };
 
   const next = {
@@ -3703,12 +3830,13 @@ function syncTransformOverlay(
       { key: "rotate-bottom", className: "screen-bottom", x: rotateBottom.x, y: rotateBottom.y, angle: screenVectorAngle(centerPoint, rotateBottom) + 90 },
     ],
     dimensions: dimensionMarks,
-    rotationWheel: { x: centerPoint.x, y: centerPoint.y, radius: 112 },
+    rotationWheel: rotationWheels.y,
+    rotationWheels,
+    rotationPlaneCenters,
     rotationPlanes,
   };
 
-  overlayRef.current = next;
-  setOverlay(next);
+  updateTransformOverlayIfChanged(overlayRef, setOverlay, next);
 }
 
 function syncAlignOverlay(

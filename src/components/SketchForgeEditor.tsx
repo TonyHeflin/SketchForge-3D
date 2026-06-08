@@ -166,6 +166,46 @@ function canonicalizeShape(shape: WorkplaneShape): WorkplaneShape {
   return next;
 }
 
+function workplaneShapesEqual(a: WorkplaneShape, b: WorkplaneShape) {
+  return (
+    a.id === b.id &&
+    a.name === b.name &&
+    a.kind === b.kind &&
+    a.color === b.color &&
+    a.hole === b.hole &&
+    a.x === b.x &&
+    a.z === b.z &&
+    a.elevation === b.elevation &&
+    a.size === b.size &&
+    a.width === b.width &&
+    a.depth === b.depth &&
+    a.height === b.height &&
+    a.rotation === b.rotation &&
+    a.rotationX === b.rotationX &&
+    a.rotationZ === b.rotationZ &&
+    a.mirrorX === b.mirrorX &&
+    a.mirrorY === b.mirrorY &&
+    a.mirrorZ === b.mirrorZ &&
+    a.radius === b.radius &&
+    a.steps === b.steps &&
+    a.sides === b.sides &&
+    a.bevel === b.bevel &&
+    a.segments === b.segments &&
+    a.topRadius === b.topRadius &&
+    a.baseRadius === b.baseRadius &&
+    a.text === b.text &&
+    a.font === b.font &&
+    a.importedMesh === b.importedMesh &&
+    a.imagePlate === b.imagePlate &&
+    a.groupedShapes === b.groupedShapes &&
+    a.groupedBaseWidth === b.groupedBaseWidth &&
+    a.groupedBaseDepth === b.groupedBaseDepth &&
+    a.groupedBaseHeight === b.groupedBaseHeight &&
+    a.locked === b.locked &&
+    a.hidden === b.hidden
+  );
+}
+
 function serializeShapesForSync(shapes: WorkplaneShape[]) {
   return JSON.stringify(shapes.map(canonicalizeShape));
 }
@@ -4047,9 +4087,12 @@ export function SketchForgeEditor({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const booleanAutomationRunRef = useRef<string | null>(null);
   const projectHydratingRef = useRef(false);
+  const projectInteractionActiveRef = useRef(false);
+  const pendingProjectShapesRef = useRef<WorkplaneShape[] | null>(null);
   const projectSyncTimerRef = useRef<number | null>(null);
   const lastProjectShapesSyncRef = useRef("");
   const projectSnapshotRunRef = useRef(0);
+  const [projectInteractionActive, setProjectInteractionActive] = useState(false);
 
   useEffect(() => {
     const applyTitles = () => {
@@ -4115,6 +4158,9 @@ export function SketchForgeEditor({
     if (!projectId || !onProjectSnapshot || typeof window === "undefined") {
       return;
     }
+    if (projectInteractionActive) {
+      return;
+    }
 
     const runId = projectSnapshotRunRef.current + 1;
     projectSnapshotRunRef.current = runId;
@@ -4134,7 +4180,7 @@ export function SketchForgeEditor({
       window.clearTimeout(firstTimer);
       window.clearTimeout(secondTimer);
     };
-  }, [onProjectSnapshot, projectId, shapes]);
+  }, [onProjectSnapshot, projectId, projectInteractionActive, shapes]);
 
   useEffect(() => {
     if (selectedShapes.length < 2) {
@@ -4157,6 +4203,14 @@ export function SketchForgeEditor({
       if (!projectId || !onProjectShapesChange) {
         return;
       }
+      if (projectInteractionActiveRef.current) {
+        pendingProjectShapesRef.current = nextShapes.map(canonicalizeShape);
+        if (projectSyncTimerRef.current !== null) {
+          window.clearTimeout(projectSyncTimerRef.current);
+          projectSyncTimerRef.current = null;
+        }
+        return;
+      }
       const canonicalNext = nextShapes.map(canonicalizeShape);
       const serialized = projectShapesFingerprint(canonicalNext);
       if (lastProjectShapesSyncRef.current === serialized) {
@@ -4173,6 +4227,21 @@ export function SketchForgeEditor({
     },
     [onProjectShapesChange, projectId],
   );
+
+  useEffect(() => {
+    if (projectInteractionActive || !pendingProjectShapesRef.current) {
+      return;
+    }
+    const pendingShapes = pendingProjectShapesRef.current;
+    pendingProjectShapesRef.current = null;
+    const timer = window.setTimeout(() => syncProjectShapes(pendingShapes), 180);
+    return () => window.clearTimeout(timer);
+  }, [projectInteractionActive, syncProjectShapes]);
+
+  const updateProjectInteractionActive = useCallback((active: boolean) => {
+    projectInteractionActiveRef.current = active;
+    setProjectInteractionActive((current) => (current === active ? current : active));
+  }, []);
 
   const commitShapes = useCallback(
     (next: WorkplaneShape[], nextSelection: string | string[] | null = selectedIds, message?: string) => {
@@ -4246,16 +4315,23 @@ export function SketchForgeEditor({
 
   const updateShape = useCallback((id: string, patch: Partial<WorkplaneShape>) => {
     const cleanedPatch = cleanShapePatch(patch);
-    setShapes((current) =>
-      current.map((shape) => {
+    setShapes((current) => {
+      let changed = false;
+      const next = current.map((shape) => {
         if (shape.id !== id) {
           return shape;
         }
 
         const patched = { ...shape, ...cleanedPatch };
-        return canonicalizeShape("hole" in cleanedPatch ? withHoleMode(patched, Boolean(cleanedPatch.hole), cleanedPatch.color) : patched);
-      }),
-    );
+        const canonical = canonicalizeShape("hole" in cleanedPatch ? withHoleMode(patched, Boolean(cleanedPatch.hole), cleanedPatch.color) : patched);
+        if (workplaneShapesEqual(shape, canonical)) {
+          return shape;
+        }
+        changed = true;
+        return canonical;
+      });
+      return changed ? next : current;
+    });
   }, []);
 
   const deleteSelected = useCallback(() => {
@@ -5275,6 +5351,7 @@ export function SketchForgeEditor({
           onMirrorSelection={mirrorSelectionAcross}
           onSelectShape={selectShape}
           onSetPlacementElevation={setPlacementWorkplane}
+          onInteractionActiveChange={updateProjectInteractionActive}
           onUpdateShape={updateShape}
           onWorkplaneModeChange={setWorkplaneMode}
         />

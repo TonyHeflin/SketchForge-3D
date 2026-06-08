@@ -213,7 +213,7 @@ src/lib/                  Small shared utilities
 public/assets/            Static image, icon, logo, and shape assets
 public/manifold.*         Manifold runtime files used by geometry tooling
 docs/media/               README screenshots and future demo videos
-.github/                  Issue templates and pull request template
+.github/                  Issue templates, community health files, and pull request template
 ```
 
 ## Local Data
@@ -302,11 +302,11 @@ Good areas to help:
 - accessibility improvements
 - performance work for larger scenes
 
-Before opening a pull request, read [CONTRIBUTING.md](CONTRIBUTING.md).
+Before opening a pull request, read [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md).
 
 ## Security
 
-Please do not open public issues for security-sensitive reports. Read [SECURITY.md](SECURITY.md) for the reporting process.
+Please do not open public issues for security-sensitive reports. Read [.github/SECURITY.md](.github/SECURITY.md) for the reporting process.
 
 ## License
 
