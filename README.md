@@ -205,13 +205,14 @@ npm run build
 ## Project Structure
 
 ```text
-src/app/                  Next.js app routes, dashboard, API routes, and app styles
-src/components/           Editor, viewport, shape sidebar, icons, and tool controls
-src/types/                Shared SketchForge shape and editor types
-src/generated/            Generated Manifold runtime source used by the app
-src/lib/                  Small shared utilities
-public/assets/            Static image, icon, logo, and shape assets
-public/manifold.*         Manifold runtime files used by geometry tooling
+apps/web/                 Next.js app workspace
+apps/web/src/app/         App routes, dashboard, API routes, and app styles
+apps/web/src/components/  Editor, viewport, shape sidebar, icons, and tool controls
+apps/web/src/types/       Shared SketchForge shape and editor types
+apps/web/src/generated/   Generated Manifold runtime source used by the app
+apps/web/src/lib/         Small shared utilities
+apps/web/public/assets/   Static image, icon, logo, and shape assets
+apps/web/public/manifold.*  Manifold runtime files used by geometry tooling
 docs/media/               README screenshots and future demo videos
 .github/                  Issue templates, community health files, and pull request template
 ```

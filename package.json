@@ -3,11 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "export": "set STATIC_EXPORT=true&& next build",
-    "start": "next start",
-    "typecheck": "tsc --noEmit"
+    "dev": "next dev apps/web",
+    "build": "next build apps/web",
+    "export": "set STATIC_EXPORT=true&& next build apps/web",
+    "start": "next start apps/web",
+    "typecheck": "tsc -p apps/web/tsconfig.json --noEmit"
   },
   "dependencies": {
     "@tailwindcss/postcss": "^4.1.8",
