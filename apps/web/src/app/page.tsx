@@ -41,6 +41,9 @@ const PROJECT_SHAPES_STORE_NAME = "projectShapes";
 const DOWNLOAD_MODE_STORAGE_KEY = "sketchForge.downloadMode";
 const DOWNLOAD_FOLDER_STORAGE_KEY = "sketchForge.downloadFolder";
 const PROJECT_ACCENTS: DashboardProject["accent"][] = ["cyan", "green", "gold", "red"];
+const LIVE_DEMO_MODE = process.env.NEXT_PUBLIC_SKETCHFORGE_DEMO_MODE === "true";
+const LIVE_DEMO_PROJECT_ID = "sketchforge-live-demo";
+const LIVE_DEMO_PROJECT_NAME = "SketchForge live demo";
 
 function formatUpdated(timestamp: number) {
   const age = Date.now() - timestamp;
@@ -209,6 +212,21 @@ function newProject(name: string, index: number, shapeCount = 0): DashboardProje
   };
 }
 
+function liveDemoProject(existingProject?: DashboardProject | null): DashboardProject {
+  const now = Date.now();
+  return {
+    id: LIVE_DEMO_PROJECT_ID,
+    name: LIVE_DEMO_PROJECT_NAME,
+    createdAt: existingProject?.createdAt ?? now,
+    updatedAt: existingProject?.updatedAt ?? now,
+    shapes: existingProject?.shapes ?? 0,
+    accent: existingProject?.accent ?? "cyan",
+    thumbnailUrl: existingProject?.thumbnailUrl ?? null,
+    thumbnailVersion: existingProject?.thumbnailVersion,
+    revision: existingProject?.revision ?? existingProject?.updatedAt ?? now,
+  };
+}
+
 function projectNameFromFileName(fileName: string) {
   return fileName.replace(/\.[^.]+$/, "").trim() || "Imported STL design";
 }
@@ -232,20 +250,53 @@ export default function Home() {
 
   useEffect(() => {
     const { projects: storedProjects, legacyShapes } = readStoredProjects();
-    setProjects(storedProjects);
+    let nextProjects = storedProjects;
+    let initialShapeCache = legacyShapes;
+
+    if (LIVE_DEMO_MODE) {
+      const existingDemoProject = storedProjects.find((project) => project.id === LIVE_DEMO_PROJECT_ID) ?? null;
+      const demoProject = liveDemoProject(existingDemoProject);
+      nextProjects = [demoProject, ...storedProjects.filter((project) => project.id !== LIVE_DEMO_PROJECT_ID)];
+      setActiveProjectId(LIVE_DEMO_PROJECT_ID);
+      setEditorStarted(true);
+      setView("editor");
+      window.history.replaceState(null, "", "/");
+
+      if (!existingDemoProject && !initialShapeCache[LIVE_DEMO_PROJECT_ID]) {
+        const revision = demoProject.revision ?? demoProject.updatedAt;
+        initialShapeCache = {
+          ...initialShapeCache,
+          [LIVE_DEMO_PROJECT_ID]: { revision, shapes: [] },
+        };
+        void saveProjectShapes(LIVE_DEMO_PROJECT_ID, [], revision).catch(() => {
+          setDashboardNotice("Could not prepare live demo storage");
+        });
+      }
+    }
+
+    setProjects(nextProjects);
     if (Object.keys(legacyShapes).length > 0) {
-      setProjectShapesById(legacyShapes);
+      setProjectShapesById(initialShapeCache);
       Object.entries(legacyShapes).forEach(([projectId, entry]) => {
         void saveProjectShapes(projectId, entry.shapes, entry.revision).catch(() => {
           setDashboardNotice("Could not migrate project shapes to larger storage");
         });
       });
+    } else if (Object.keys(initialShapeCache).length > 0) {
+      setProjectShapesById(initialShapeCache);
     }
-    setDownloadMode(window.localStorage.getItem(DOWNLOAD_MODE_STORAGE_KEY) === "folder" ? "folder" : "browser");
-    setDownloadFolder(window.localStorage.getItem(DOWNLOAD_FOLDER_STORAGE_KEY) ?? "");
+    if (LIVE_DEMO_MODE) {
+      window.localStorage.setItem(DOWNLOAD_MODE_STORAGE_KEY, "browser");
+      window.localStorage.removeItem(DOWNLOAD_FOLDER_STORAGE_KEY);
+      setDownloadMode("browser");
+      setDownloadFolder("");
+    } else {
+      setDownloadMode(window.localStorage.getItem(DOWNLOAD_MODE_STORAGE_KEY) === "folder" ? "folder" : "browser");
+      setDownloadFolder(window.localStorage.getItem(DOWNLOAD_FOLDER_STORAGE_KEY) ?? "");
+    }
 
     const params = new URLSearchParams(window.location.search);
-    if (params.has("codexBooleanCase") || params.get("editor") === "1") {
+    if (!LIVE_DEMO_MODE && (params.has("codexBooleanCase") || params.get("editor") === "1")) {
       const requestedProjectId = params.get("project");
       if (requestedProjectId && storedProjects.some((project) => project.id === requestedProjectId)) {
         setActiveProjectId(requestedProjectId);
@@ -293,6 +344,11 @@ export default function Home() {
   useEffect(() => {
     if (!activeProjectId) return;
     if (projects.some((project) => project.id === activeProjectId)) return;
+    if (LIVE_DEMO_MODE && activeProjectId === LIVE_DEMO_PROJECT_ID) {
+      const demoProject = liveDemoProject();
+      setProjects((current) => [demoProject, ...current.filter((project) => project.id !== LIVE_DEMO_PROJECT_ID)]);
+      return;
+    }
     setActiveProjectId(null);
     setView("dashboard");
     if (typeof window !== "undefined") {
@@ -531,7 +587,7 @@ export default function Home() {
           event.currentTarget.value = "";
         }}
       />
-      {view === "dashboard" ? (
+      {!LIVE_DEMO_MODE && view === "dashboard" ? (
         <Dashboard
           dashboardNotice={dashboardNotice}
           downloadFolder={downloadFolder}
@@ -559,9 +615,9 @@ export default function Home() {
         <div className={view === "editor" ? "editor-stage active" : "editor-stage"} aria-hidden={view !== "editor"}>
           <SketchForgeEditor
             initialShapes={activeProjectShapeEntry?.shapes ?? []}
-            onHome={openDashboard}
+            onHome={LIVE_DEMO_MODE ? undefined : openDashboard}
             onProjectShapesChange={updateProjectShapes}
-            onProjectSnapshot={updateProjectSnapshot}
+            onProjectSnapshot={LIVE_DEMO_MODE ? undefined : updateProjectSnapshot}
             projectId={activeProjectId}
             projectRevision={activeProjectShapeEntry?.revision ?? activeProject?.revision ?? 0}
           />
