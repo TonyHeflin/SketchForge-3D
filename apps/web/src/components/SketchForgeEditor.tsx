@@ -49,6 +49,7 @@ type ExportFormat = "stl" | "obj";
 type Vec3 = [number, number, number];
 type MeshData = { name: string; vertices: Vec3[]; faces: [number, number, number][] };
 type Cuboid = { minX: number; maxX: number; minY: number; maxY: number; minZ: number; maxZ: number };
+type ShapeUpdatePatch = Partial<WorkplaneShape> & { bakeTransform?: boolean };
 type ManifoldSolid = ReturnType<ManifoldToplevel["Manifold"]["cube"]>;
 type ToolbarShapeAsset = ShapeAsset & { menuIcon: string };
 type DownloadResult = { mode: "browser" } | { mode: "folder"; path: string };
@@ -113,6 +114,7 @@ declare global {
 const CUTTER_PADDING = 0.05;
 const POINT_TOLERANCE = 0.0001;
 const CUTTER_RESIDUAL_INSET = CUTTER_PADDING * 0.4;
+const MIN_SHAPE_DIMENSION = 0.01;
 const IMPORTED_EXACT_BOOLEAN_TRIANGLE_LIMIT = 150000;
 const COPLANAR_BOOLEAN_RESCUE_DEGREES = 0.02;
 const stlLoader = new STLLoader();
@@ -1428,6 +1430,90 @@ function importedMeshForShape(shape: WorkplaneShape): MeshData {
   }
 
   return transformMesh({ name: sanitizeName(shape.name), vertices, faces }, shape);
+}
+
+function shapeHasTransformToBake(shape: WorkplaneShape) {
+  return (
+    Math.abs(cleanRotationDegrees(shape.rotation ?? 0, 3)) > 0 ||
+    Math.abs(cleanRotationDegrees(shape.rotationX ?? 0, 3)) > 0 ||
+    Math.abs(cleanRotationDegrees(shape.rotationZ ?? 0, 3)) > 0 ||
+    Boolean(shape.mirrorX || shape.mirrorY || shape.mirrorZ)
+  );
+}
+
+function bakeShapeTransformIntoMesh(shape: WorkplaneShape): WorkplaneShape {
+  if (!shapeHasTransformToBake(shape)) {
+    return shape;
+  }
+
+  const mesh = meshForShape(shape);
+  if (mesh.vertices.length < 3 || mesh.faces.length < 1) {
+    return shape;
+  }
+
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let minZ = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  let maxZ = Number.NEGATIVE_INFINITY;
+
+  mesh.vertices.forEach(([x, y, z]) => {
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    minZ = Math.min(minZ, z);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+    maxZ = Math.max(maxZ, z);
+  });
+
+  if (![minX, minY, minZ, maxX, maxY, maxZ].every(Number.isFinite)) {
+    return shape;
+  }
+
+  const centerX = (minX + maxX) / 2;
+  const centerZ = (minZ + maxZ) / 2;
+  const width = Math.max(MIN_SHAPE_DIMENSION, maxX - minX);
+  const height = Math.max(MIN_SHAPE_DIMENSION, maxY - minY);
+  const depth = Math.max(MIN_SHAPE_DIMENSION, maxZ - minZ);
+  const positions: number[] = [];
+
+  mesh.faces.forEach(([ai, bi, ci]) => {
+    [mesh.vertices[ai], mesh.vertices[bi], mesh.vertices[ci]].forEach(([x, y, z]) => {
+      positions.push(x - centerX, y - minY, z - centerZ);
+    });
+  });
+
+  return {
+    ...shape,
+    kind: "mesh",
+    x: cleanNearZero(centerX, 0.0005),
+    z: cleanNearZero(centerZ, 0.0005),
+    elevation: cleanNearZero(minY, 0.0005),
+    width,
+    depth,
+    height,
+    size: Math.max(width, depth),
+    rotation: 0,
+    rotationX: 0,
+    rotationZ: 0,
+    mirrorX: undefined,
+    mirrorY: undefined,
+    mirrorZ: undefined,
+    importedMesh: {
+      positions,
+      baseWidth: width,
+      baseDepth: depth,
+      baseHeight: height,
+      triangleCount: mesh.faces.length,
+      sourceFormat: "json",
+    },
+    imagePlate: undefined,
+    groupedShapes: undefined,
+    groupedBaseWidth: undefined,
+    groupedBaseDepth: undefined,
+    groupedBaseHeight: undefined,
+  };
 }
 
 export function importedShapeFromStl(fileName: string, buffer: ArrayBuffer): WorkplaneShape {
@@ -2828,9 +2914,9 @@ function booleanMeshShape(selection: WorkplaneShape[]): WorkplaneShape | null {
     const centerX = (groupBounds.minX + groupBounds.maxX) / 2;
     const centerZ = (groupBounds.minZ + groupBounds.maxZ) / 2;
     const minY = groupBounds.minY;
-    const width = Math.max(0.1, groupBounds.maxX - groupBounds.minX);
-    const height = Math.max(0.1, groupBounds.maxY - groupBounds.minY);
-    const depth = Math.max(0.1, groupBounds.maxZ - groupBounds.minZ);
+    const width = Math.max(MIN_SHAPE_DIMENSION, groupBounds.maxX - groupBounds.minX);
+    const height = Math.max(MIN_SHAPE_DIMENSION, groupBounds.maxY - groupBounds.minY);
+    const depth = Math.max(MIN_SHAPE_DIMENSION, groupBounds.maxZ - groupBounds.minZ);
     const positions: number[] = [];
 
     for (let i = 0; i < resultPositions.length; i += 3) {
@@ -2891,9 +2977,9 @@ function resultGeometryToMeshShape(
   const centerX = (groupBounds.minX + groupBounds.maxX) / 2;
   const centerZ = (groupBounds.minZ + groupBounds.maxZ) / 2;
   const minY = groupBounds.minY;
-  const width = Math.max(0.1, groupBounds.maxX - groupBounds.minX);
-  const height = Math.max(0.1, groupBounds.maxY - groupBounds.minY);
-  const depth = Math.max(0.1, groupBounds.maxZ - groupBounds.minZ);
+  const width = Math.max(MIN_SHAPE_DIMENSION, groupBounds.maxX - groupBounds.minX);
+  const height = Math.max(MIN_SHAPE_DIMENSION, groupBounds.maxY - groupBounds.minY);
+  const depth = Math.max(MIN_SHAPE_DIMENSION, groupBounds.maxZ - groupBounds.minZ);
   const positions: number[] = [];
 
   for (let i = 0; i < resultPositions.length; i += 3) {
@@ -3220,9 +3306,9 @@ function meshPositionsToGroupShape(selection: WorkplaneShape[], solids: Workplan
 
   const centerX = (minX + maxX) / 2;
   const centerZ = (minZ + maxZ) / 2;
-  const width = Math.max(0.1, maxX - minX);
-  const height = Math.max(0.1, maxY - minY);
-  const depth = Math.max(0.1, maxZ - minZ);
+  const width = Math.max(MIN_SHAPE_DIMENSION, maxX - minX);
+  const height = Math.max(MIN_SHAPE_DIMENSION, maxY - minY);
+  const depth = Math.max(MIN_SHAPE_DIMENSION, maxZ - minZ);
   const normalizedPositions: number[] = [];
   for (let i = 0; i < positions.length; i += 3) {
     normalizedPositions.push(positions[i] - centerX, positions[i + 1] - minY, positions[i + 2] - centerZ);
@@ -3481,10 +3567,10 @@ function boxedBooleanMeshShape(selection: WorkplaneShape[]): WorkplaneShape | nu
   const groupBounds = boundsForCuboids(cuboids);
   const centerX = (groupBounds.minX + groupBounds.maxX) / 2;
   const centerZ = (groupBounds.minZ + groupBounds.maxZ) / 2;
-  const width = Math.max(0.1, groupBounds.maxX - groupBounds.minX);
+  const width = Math.max(MIN_SHAPE_DIMENSION, groupBounds.maxX - groupBounds.minX);
   const minY = groupBounds.minY;
-  const height = Math.max(0.1, groupBounds.maxY - groupBounds.minY);
-  const depth = Math.max(0.1, groupBounds.maxZ - groupBounds.minZ);
+  const height = Math.max(MIN_SHAPE_DIMENSION, groupBounds.maxY - groupBounds.minY);
+  const depth = Math.max(MIN_SHAPE_DIMENSION, groupBounds.maxZ - groupBounds.minZ);
   const mesh = cuboidsToMesh("Group", cuboids, centerX, centerZ, minY);
   const positions = mesh.faces.flatMap(([ai, bi, ci]) => [mesh.vertices[ai], mesh.vertices[bi], mesh.vertices[ci]]).flat();
   const firstSolid = solids[0];
@@ -3536,10 +3622,10 @@ function aabbBooleanMeshShape(selection: WorkplaneShape[]): WorkplaneShape | nul
   const groupBounds = boundsForCuboids(cuboids);
   const centerX = (groupBounds.minX + groupBounds.maxX) / 2;
   const centerZ = (groupBounds.minZ + groupBounds.maxZ) / 2;
-  const width = Math.max(0.1, groupBounds.maxX - groupBounds.minX);
+  const width = Math.max(MIN_SHAPE_DIMENSION, groupBounds.maxX - groupBounds.minX);
   const minY = groupBounds.minY;
-  const height = Math.max(0.1, groupBounds.maxY - groupBounds.minY);
-  const depth = Math.max(0.1, groupBounds.maxZ - groupBounds.minZ);
+  const height = Math.max(MIN_SHAPE_DIMENSION, groupBounds.maxY - groupBounds.minY);
+  const depth = Math.max(MIN_SHAPE_DIMENSION, groupBounds.maxZ - groupBounds.minZ);
   const mesh = cuboidsToMesh("Group", cuboids, centerX, centerZ, minY);
   const positions = mesh.faces.flatMap(([ai, bi, ci]) => [mesh.vertices[ai], mesh.vertices[bi], mesh.vertices[ci]]).flat();
   const firstSolid = solids[0];
@@ -3658,9 +3744,9 @@ function hollowClipMeshShape(selection: WorkplaneShape[]): WorkplaneShape | null
 
   const centerX = (minX + maxX) / 2;
   const centerZ = (minZ + maxZ) / 2;
-  const width = Math.max(0.1, maxX - minX);
-  const height = Math.max(0.1, maxY - minY);
-  const depth = Math.max(0.1, maxZ - minZ);
+  const width = Math.max(MIN_SHAPE_DIMENSION, maxX - minX);
+  const height = Math.max(MIN_SHAPE_DIMENSION, maxY - minY);
+  const depth = Math.max(MIN_SHAPE_DIMENSION, maxZ - minZ);
   const normalizedPositions: number[] = [];
   for (let i = 0; i < positions.length; i += 3) {
     normalizedPositions.push(positions[i] - centerX, positions[i + 1] - minY, positions[i + 2] - centerZ);
@@ -3759,9 +3845,9 @@ function mergedMeshShape(selection: WorkplaneShape[]): WorkplaneShape | null {
 
   const centerX = (minX + maxX) / 2;
   const centerZ = (minZ + maxZ) / 2;
-  const width = Math.max(0.1, maxX - minX);
-  const height = Math.max(0.1, maxY - minY);
-  const depth = Math.max(0.1, maxZ - minZ);
+  const width = Math.max(MIN_SHAPE_DIMENSION, maxX - minX);
+  const height = Math.max(MIN_SHAPE_DIMENSION, maxY - minY);
+  const depth = Math.max(MIN_SHAPE_DIMENSION, maxZ - minZ);
   const positions: number[] = [];
 
   faces.forEach(([ai, bi, ci]) => {
@@ -3819,9 +3905,9 @@ function groupedShape(selection: WorkplaneShape[]): WorkplaneShape | null {
   const maxZ = groupBounds.maxZ;
   const centerX = (minX + maxX) / 2;
   const centerZ = (minZ + maxZ) / 2;
-  const width = Math.max(0.1, maxX - minX);
-  const depth = Math.max(0.1, maxZ - minZ);
-  const height = Math.max(0.1, maxY - minY);
+  const width = Math.max(MIN_SHAPE_DIMENSION, maxX - minX);
+  const depth = Math.max(MIN_SHAPE_DIMENSION, maxZ - minZ);
+  const height = Math.max(MIN_SHAPE_DIMENSION, maxY - minY);
   const firstSolid = groupable.find((shape) => !shape.hole) ?? groupable[0];
   const holeOnly = groupable.every((shape) => shape.hole);
 
@@ -3872,8 +3958,9 @@ function rotationFromQuaternion(quaternion: THREE.Quaternion) {
   };
 }
 
-function cleanShapePatch(patch: Partial<WorkplaneShape>): Partial<WorkplaneShape> {
-  const next = { ...patch };
+function cleanShapePatch(patch: ShapeUpdatePatch): Partial<WorkplaneShape> {
+  const { bakeTransform: _bakeTransform, ...rest } = patch;
+  const next = { ...rest };
   if (typeof next.rotation === "number") {
     next.rotation = cleanRotationDegrees(next.rotation, 1);
   }
@@ -4313,7 +4400,8 @@ export function SketchForgeEditor({
     [commitShapes, placementElevation, shapes],
   );
 
-  const updateShape = useCallback((id: string, patch: Partial<WorkplaneShape>) => {
+  const updateShape = useCallback((id: string, patch: ShapeUpdatePatch) => {
+    const bakeTransform = Boolean(patch.bakeTransform);
     const cleanedPatch = cleanShapePatch(patch);
     setShapes((current) => {
       let changed = false;
@@ -4323,7 +4411,8 @@ export function SketchForgeEditor({
         }
 
         const patched = { ...shape, ...cleanedPatch };
-        const canonical = canonicalizeShape("hole" in cleanedPatch ? withHoleMode(patched, Boolean(cleanedPatch.hole), cleanedPatch.color) : patched);
+        const canonicalBase = canonicalizeShape("hole" in cleanedPatch ? withHoleMode(patched, Boolean(cleanedPatch.hole), cleanedPatch.color) : patched);
+        const canonical = bakeTransform ? canonicalizeShape(bakeShapeTransformIntoMesh(canonicalBase)) : canonicalBase;
         if (workplaneShapesEqual(shape, canonical)) {
           return shape;
         }

@@ -1019,7 +1019,8 @@ button {
 .toolbar-icon:not(.disabled) .toolbar-sprite-icon,
 .toolbar-icon:not(.disabled) .vector-toolbar-sprite-icon,
 .shape-menu-trigger .vector-toolbar-sprite-icon,
-.action-buttons button .vector-toolbar-sprite-icon {
+.action-buttons button .vector-toolbar-sprite-icon,
+.inspector-header-icon .vector-toolbar-sprite-icon {
   filter: grayscale(0.35) sepia(0.12) saturate(1.7) hue-rotate(165deg) contrast(1.18) brightness(0.78) drop-shadow(0 0 1px rgba(255, 255, 255, 0.95)) drop-shadow(0 0 3px rgba(0, 156, 222, 0.2));
   opacity: 0.94;
 }
@@ -1028,13 +1029,15 @@ button {
 .toolbar-icon:not(.disabled):hover .vector-toolbar-sprite-icon,
 .shape-menu-trigger:hover .vector-toolbar-sprite-icon,
 .shape-menu-trigger.active .vector-toolbar-sprite-icon,
-.action-buttons button:hover .vector-toolbar-sprite-icon {
+.action-buttons button:hover .vector-toolbar-sprite-icon,
+.inspector-header-icon:hover .vector-toolbar-sprite-icon {
   filter: grayscale(0.1) sepia(0.22) saturate(2.1) hue-rotate(164deg) contrast(1.2) brightness(0.72) drop-shadow(0 0 1px rgba(255, 255, 255, 1)) drop-shadow(0 0 5px rgba(0, 156, 222, 0.38));
   opacity: 1;
 }
 
 .toolbar-icon.active .toolbar-sprite-icon,
-.toolbar-icon.active .vector-toolbar-sprite-icon {
+.toolbar-icon.active .vector-toolbar-sprite-icon,
+.inspector-header-icon.active .vector-toolbar-sprite-icon {
   filter: grayscale(0.05) sepia(0.22) saturate(2.35) hue-rotate(164deg) contrast(1.2) brightness(0.7) drop-shadow(0 0 1px rgba(255, 255, 255, 1)) drop-shadow(0 0 5px rgba(0, 156, 222, 0.42));
   opacity: 1;
 }
@@ -2054,6 +2057,11 @@ button {
   background: transparent;
   border: 0;
   cursor: pointer;
+}
+
+.inspector-header-icon .vector-toolbar-sprite-icon {
+  transform: scale(0.9);
+  transform-origin: center;
 }
 
 .inspector-header-icon.active {
