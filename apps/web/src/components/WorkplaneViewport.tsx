@@ -599,7 +599,7 @@ function resizedShapeSize(width: number, depth: number) {
 }
 
 function resizedShapePatchFromFrame(shape: WorkplaneShape, center: THREE.Vector3, width: number, depth: number): Partial<WorkplaneShape> {
-  return {
+  const patch: Partial<WorkplaneShape> = {
     x: cleanNearZero(center.x, 0.0005),
     z: cleanNearZero(center.z, 0.0005),
     elevation: cleanNearZero(center.y - shape.height / 2, 0.0005),
@@ -607,6 +607,10 @@ function resizedShapePatchFromFrame(shape: WorkplaneShape, center: THREE.Vector3
     depth,
     size: resizedShapeSize(width, depth),
   };
+  if (shape.kind === "cone") {
+    patch.baseRadius = width / 2;
+  }
+  return patch;
 }
 
 function shapeScreenBounds(state: ThreeState, shape: WorkplaneShape) {
@@ -1592,7 +1596,11 @@ export function WorkplaneViewport({
     if (Number.isFinite(value) && value > 0) {
       const nextValue = Math.max(MIN_SHAPE_SIZE, value);
       if (edit.axis === "width") {
-        onUpdateShape(id, patchWithPreservedWorldBottom(shape, { width: nextValue, size: resizedShapeSize(nextValue, shapeDepth(shape)) }));
+        const patch: Partial<WorkplaneShape> = { width: nextValue, size: resizedShapeSize(nextValue, shapeDepth(shape)) };
+        if (shape.kind === "cone") {
+          patch.baseRadius = nextValue / 2;
+        }
+        onUpdateShape(id, patchWithPreservedWorldBottom(shape, patch));
       } else if (edit.axis === "depth") {
         onUpdateShape(id, patchWithPreservedWorldBottom(shape, { depth: nextValue, size: resizedShapeSize(shapeWidth(shape), nextValue) }));
       } else {
@@ -2498,6 +2506,7 @@ function getShapeProperties(shape: WorkplaneShape, onUpdate: (patch: Partial<Wor
   const depth = shapeDepth(shape);
   const setWidth = (value: number) => onUpdate({ width: value, size: resizedShapeSize(value, depth) });
   const setDepth = (value: number) => onUpdate({ depth: value, size: resizedShapeSize(width, value) });
+  const setConeWidth = (value: number) => onUpdate({ width: value, baseRadius: value / 2, size: resizedShapeSize(value, depth) });
   const setBaseRadius = (value: number) => onUpdate({ baseRadius: value, width: value * 2, depth: value * 2, size: value * 2 });
 
   if (shape.kind === "box") {
@@ -2515,11 +2524,19 @@ function getShapeProperties(shape: WorkplaneShape, onUpdate: (patch: Partial<Wor
       { label: "Sides", value: shape.sides ?? 96, min: 3, max: 128, step: 1, onChange: (sides) => onUpdate({ sides: Math.round(sides) }) },
       { label: "Bevel", value: shape.bevel ?? 0, min: 0, max: 10, onChange: (bevel) => onUpdate({ bevel }) },
       { label: "Segments", value: shape.segments ?? 1, min: 1, max: 24, step: 1, onChange: (segments) => onUpdate({ segments: Math.round(segments) }) },
+      { label: "Length", value: depth, min: MIN_SHAPE_SIZE, max: 160, onChange: setDepth },
+      { label: "Width", value: width, min: MIN_SHAPE_SIZE, max: 160, onChange: setWidth },
+      { label: "Height", value: shape.height, min: MIN_SHAPE_SIZE, max: 160, onChange: (height) => onUpdate({ height }) },
     ];
   }
 
   if (shape.kind === "sphere") {
-    return [{ label: "Steps", value: shape.steps ?? 24, min: 6, max: 64, step: 1, onChange: (steps) => onUpdate({ steps: Math.round(steps) }) }];
+    return [
+      { label: "Steps", value: shape.steps ?? 24, min: 6, max: 64, step: 1, onChange: (steps) => onUpdate({ steps: Math.round(steps) }) },
+      { label: "Length", value: depth, min: MIN_SHAPE_SIZE, max: 160, onChange: setDepth },
+      { label: "Width", value: width, min: MIN_SHAPE_SIZE, max: 160, onChange: setWidth },
+      { label: "Height", value: shape.height, min: MIN_SHAPE_SIZE, max: 160, onChange: (height) => onUpdate({ height }) },
+    ];
   }
 
   if (shape.kind === "halfSphere") {
@@ -2535,13 +2552,20 @@ function getShapeProperties(shape: WorkplaneShape, onUpdate: (patch: Partial<Wor
     return [
       { label: "Top Radius", value: shape.topRadius ?? 0, min: 0, max: 40, onChange: (topRadius) => onUpdate({ topRadius }) },
       { label: "Base Radius", value: shape.baseRadius ?? width / 2, min: MIN_SHAPE_SIZE, max: 80, onChange: setBaseRadius },
+      { label: "Length", value: depth, min: MIN_SHAPE_SIZE, max: 160, onChange: setDepth },
+      { label: "Width", value: width, min: MIN_SHAPE_SIZE, max: 160, onChange: setConeWidth },
       { label: "Height", value: shape.height, min: MIN_SHAPE_SIZE, max: 160, onChange: (height) => onUpdate({ height }) },
       { label: "Sides", value: shape.sides ?? 96, min: 3, max: 128, step: 1, onChange: (sides) => onUpdate({ sides: Math.round(sides) }) },
     ];
   }
 
   if (shape.kind === "pyramid") {
-    return [{ label: "Sides", value: shape.sides ?? 4, min: 3, max: 24, step: 1, onChange: (sides) => onUpdate({ sides: Math.round(sides) }) }];
+    return [
+      { label: "Sides", value: shape.sides ?? 4, min: 3, max: 24, step: 1, onChange: (sides) => onUpdate({ sides: Math.round(sides) }) },
+      { label: "Length", value: depth, min: MIN_SHAPE_SIZE, max: 160, onChange: setDepth },
+      { label: "Width", value: width, min: MIN_SHAPE_SIZE, max: 160, onChange: setWidth },
+      { label: "Height", value: shape.height, min: MIN_SHAPE_SIZE, max: 160, onChange: (height) => onUpdate({ height }) },
+    ];
   }
 
   if (shape.kind === "roundRoof") {
@@ -4054,7 +4078,15 @@ function createShapeObject(shape: WorkplaneShape, showEdges = false, onTextureRe
       addMesh(group, new THREE.SphereGeometry(1, Math.max(8, (shape.steps ?? 24) * 2), Math.max(6, shape.steps ?? 24)), material, shape, undefined, undefined, new THREE.Vector3(width / 2, height / 2, depth / 2));
       break;
     case "cone":
-      addMesh(group, new THREE.CylinderGeometry(shape.topRadius ?? 0, shape.baseRadius ?? width / 2, height, shape.sides ?? 96), material, shape);
+      addMesh(
+        group,
+        new THREE.CylinderGeometry(shape.topRadius ?? 0, shape.baseRadius ?? width / 2, height, shape.sides ?? 96),
+        material,
+        shape,
+        undefined,
+        undefined,
+        new THREE.Vector3(1, 1, depth / Math.max(0.001, width)),
+      );
       break;
     case "pyramid":
       addMesh(group, createPyramidGeometry(width, height, depth, shape.sides ?? 4), material, shape);
