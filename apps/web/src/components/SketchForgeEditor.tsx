@@ -4178,6 +4178,8 @@ export function SketchForgeEditor({
   const pendingProjectShapesRef = useRef<WorkplaneShape[] | null>(null);
   const projectSyncTimerRef = useRef<number | null>(null);
   const lastProjectShapesSyncRef = useRef("");
+  const lastProjectShapesEchoRef = useRef<string | null>(null);
+  const lastProjectIdRef = useRef<string | null>(null);
   const projectSnapshotRunRef = useRef(0);
   const [projectInteractionActive, setProjectInteractionActive] = useState(false);
 
@@ -4308,6 +4310,7 @@ export function SketchForgeEditor({
       }
       projectSyncTimerRef.current = window.setTimeout(() => {
         lastProjectShapesSyncRef.current = serialized;
+        lastProjectShapesEchoRef.current = serialized;
         onProjectShapesChange({ projectId, shapes: canonicalNext });
         projectSyncTimerRef.current = null;
       }, 120);
@@ -4352,11 +4355,26 @@ export function SketchForgeEditor({
 
   useEffect(() => {
     if (!projectId) {
+      lastProjectIdRef.current = null;
       lastProjectShapesSyncRef.current = "";
+      lastProjectShapesEchoRef.current = null;
       return;
+    }
+    if (lastProjectIdRef.current !== projectId) {
+      lastProjectIdRef.current = projectId;
+      lastProjectShapesSyncRef.current = "";
+      lastProjectShapesEchoRef.current = null;
     }
     const incoming = initialShapes.map(canonicalizeShape);
     const incomingSerialized = projectShapesFingerprint(incoming);
+    // The parent echoes shapes after a local save; rehydrating that echo can reset active transform state.
+    if (lastProjectShapesEchoRef.current !== null && incomingSerialized === lastProjectShapesEchoRef.current) {
+      lastProjectShapesSyncRef.current = incomingSerialized;
+      return;
+    }
+    if (projectInteractionActiveRef.current) {
+      return;
+    }
     lastProjectShapesSyncRef.current = incomingSerialized;
     if (projectSyncTimerRef.current !== null) {
       window.clearTimeout(projectSyncTimerRef.current);
