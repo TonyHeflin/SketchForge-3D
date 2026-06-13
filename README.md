@@ -15,7 +15,6 @@
   </table>
 
   <p>
-    <a href="https://sketchforge-3d.vercel.app"><img alt="Live demo" src="https://img.shields.io/badge/live%20demo-open-000000"></a>
     <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-16a34a"></a>
     <a href="https://github.com/Formsmith746/SketchForge-3D/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/Formsmith746/SketchForge-3D?style=social"></a>
     <img alt="Local first" src="https://img.shields.io/badge/local--first-no%20account-0ea5e9">
