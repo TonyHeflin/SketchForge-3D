@@ -14,6 +14,22 @@ import gentilisBoldFontJson from "three/examples/fonts/gentilis_bold.typeface.js
 import helvetikerBoldFontJson from "three/examples/fonts/helvetiker_bold.typeface.json";
 import optimerBoldFontJson from "three/examples/fonts/optimer_bold.typeface.json";
 import { ToolbarHideSelectedIcon } from "@/components/icons";
+import { AlignOverlay, MirrorOverlay, type AlignOverlayState, type MirrorOverlayState } from "@/components/workplane/ActionOverlays";
+import {
+  TransformOverlay,
+  getElevationMeasureKey,
+  measureKeyForHandle,
+  type DimensionMark,
+  type EditingDimension,
+  type EditingRotation,
+  type PinnedRotationWheelView,
+  type RotationAxis,
+  type RotationPlaneView,
+  type RotationReadout,
+  type RotationWheelView,
+  type TransformHandleKind,
+  type TransformOverlayState,
+} from "@/components/workplane/TransformOverlay";
 import type { AlignAxis, AlignHandleStatus, AlignTarget, GridSize, ShapeAsset, WorkplaneShape } from "@/types/sketchforge";
 
 const gridSizes: GridSize[] = ["Off", "0.1 mm", "0.25 mm", "0.5 mm", "1.0 mm", "2.0 mm", "5.0 mm", "Brick"];
@@ -191,14 +207,10 @@ type MarqueeState = {
   hasMoved: boolean;
 };
 
-type TransformHandleKind = "scale" | "height" | "lift" | "rotate";
-type RotationAxis = "x" | "y" | "z";
 type RotationHandleSide = "near" | "right" | "far" | "left";
 type RotationHandleSides = Record<RotationAxis, RotationHandleSide>;
 type ShapeUpdatePatch = Partial<WorkplaneShape> & { bakeTransform?: boolean };
 type ResizeSigns = { x: number; z: number };
-type RotationWheelView = { x: number; y: number; radius: number };
-type PinnedRotationWheelView = { axis: RotationAxis; wheel: RotationWheelView; plane: RotationPlaneView };
 type TransformDragState = {
   id: string;
   ids: string[];
@@ -239,39 +251,6 @@ type TransformDragItem = {
   startQuaternion: THREE.Quaternion;
 };
 
-type TransformOverlayState = {
-  id: string;
-  width: number;
-  height: number;
-  guides: Array<{ x1: number; y1: number; x2: number; y2: number }>;
-  handles: Array<{ key: string; className: string; kind: TransformHandleKind; x: number; y: number; title: string }>;
-  rotateHandles: Array<{ key: string; className: string; x: number; y: number; angle: number }>;
-  dimensions: Record<string, DimensionMark[]>;
-  rotationWheel: RotationWheelView | null;
-  rotationWheels: Record<RotationAxis, RotationWheelView>;
-  rotationPlaneCenters: Record<RotationAxis, { x: number; y: number; z: number }>;
-  rotationPlanes: Record<RotationAxis, RotationPlaneView>;
-};
-
-type AlignOverlayState = {
-  guides: Array<{ key: string; x1: number; y1: number; x2: number; y2: number }>;
-  handles: Array<AlignHandleStatus & { key: string; x: number; y: number }>;
-};
-
-type MirrorOverlayState = {
-  guides: Array<{ key: string; x1: number; y1: number; x2: number; y2: number }>;
-  handles: Array<{ axis: AlignAxis; key: string; x: number; y: number; angle: number; title: string }>;
-};
-
-type RotationPlaneView = {
-  x: number;
-  y: number;
-  a: number;
-  b: number;
-  c: number;
-  d: number;
-};
-
 type SelectionFrame = {
   ids: string[];
   center: THREE.Vector3;
@@ -287,50 +266,6 @@ type SelectionFrame = {
   singleShape: WorkplaneShape | null;
 };
 
-type DimensionMark = {
-  key: string;
-  handleKey: string;
-  axis: "width" | "depth" | "height" | "elevation";
-  label: string;
-  x1: number;
-  y1: number;
-  x2: number;
-  y2: number;
-  e1x1: number;
-  e1y1: number;
-  e1x2: number;
-  e1y2: number;
-  e2x1: number;
-  e2y1: number;
-  e2x2: number;
-  e2y2: number;
-  labelX: number;
-  labelY: number;
-};
-
-type RotationReadout = {
-  x: number;
-  y: number;
-  text: string;
-  angle?: number;
-} | null;
-
-type EditingDimension = {
-  key: string;
-  axis: "width" | "depth" | "height" | "elevation";
-  x: number;
-  y: number;
-  value: string;
-} | null;
-
-type EditingRotation = {
-  axis: RotationAxis;
-  handleKey: string;
-  x: number;
-  y: number;
-  value: string;
-} | null;
-
 type DragItem = {
   id: string;
   startX: number;
@@ -345,21 +280,6 @@ type DragItem = {
 
 function isVerticalMeasureHandleKind(kind: TransformHandleKind) {
   return kind === "height" || kind === "lift";
-}
-
-function getElevationMeasureKey(overlay: TransformOverlayState | null) {
-  return (
-    Object.values(overlay?.dimensions ?? {})
-      .flat()
-      .find((mark) => mark.axis === "elevation")?.handleKey ?? null
-  );
-}
-
-function measureKeyForHandle(kind: TransformHandleKind, handleKey: string, overlay: TransformOverlayState | null) {
-  if (kind === "lift") {
-    return getElevationMeasureKey(overlay) ?? handleKey;
-  }
-  return handleKey;
 }
 
 function previewShapesForDrag(shapes: WorkplaneShape[], drag: DragState | null) {
@@ -2500,333 +2420,6 @@ function SnapGridControl({
               {size}
             </button>
           ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function AlignOverlay({
-  overlay,
-  onAlign,
-  onPreview,
-  onPreviewClear,
-}: {
-  overlay: AlignOverlayState;
-  onAlign: (axis: AlignAxis, target: AlignTarget) => void;
-  onPreview: (axis: AlignAxis, target: AlignTarget) => void;
-  onPreviewClear: () => void;
-}) {
-  return (
-    <div className="align-overlay" aria-label="Alignment handles">
-      <svg className="align-guides" width="100%" height="100%" aria-hidden="true">
-        {overlay.guides.map((guide) => (
-          <line key={guide.key} x1={guide.x1} y1={guide.y1} x2={guide.x2} y2={guide.y2} />
-        ))}
-      </svg>
-      {overlay.handles.map((handle) => (
-        <button
-          key={handle.key}
-          className={`align-dot axis-${handle.axis} target-${handle.target} ${handle.disabled ? "disabled" : ""} ${handle.aligned ? "aligned" : ""}`}
-          style={{ left: handle.x, top: handle.y }}
-          aria-label={handle.title}
-          title={handle.title}
-          disabled={handle.disabled}
-          onMouseEnter={() => {
-            if (!handle.disabled) {
-              onPreview(handle.axis, handle.target);
-            }
-          }}
-          onMouseLeave={onPreviewClear}
-          onFocus={() => {
-            if (!handle.disabled) {
-              onPreview(handle.axis, handle.target);
-            }
-          }}
-          onBlur={onPreviewClear}
-          onClick={(event) => {
-            event.stopPropagation();
-            onPreviewClear();
-            onAlign(handle.axis, handle.target);
-          }}
-        />
-      ))}
-    </div>
-  );
-}
-
-function MirrorOverlay({
-  overlay,
-  onMirror,
-  onPreview,
-  onPreviewClear,
-}: {
-  overlay: MirrorOverlayState;
-  onMirror: (axis: AlignAxis) => void;
-  onPreview: (axis: AlignAxis) => void;
-  onPreviewClear: () => void;
-}) {
-  return (
-    <div className="mirror-overlay" aria-label="Mirror handles">
-      <svg className="mirror-guides" width="100%" height="100%" aria-hidden="true">
-        {overlay.guides.map((guide) => (
-          <line key={guide.key} x1={guide.x1} y1={guide.y1} x2={guide.x2} y2={guide.y2} />
-        ))}
-      </svg>
-      {overlay.handles.map((handle) => (
-        <button
-          key={handle.key}
-          className={`mirror-handle axis-${handle.axis}`}
-          style={{ left: handle.x, top: handle.y, "--mirror-angle": `${handle.angle}deg` } as CSSProperties}
-          aria-label={handle.title}
-          title={handle.title}
-          onMouseEnter={() => onPreview(handle.axis)}
-          onMouseLeave={onPreviewClear}
-          onFocus={() => onPreview(handle.axis)}
-          onBlur={onPreviewClear}
-          onClick={(event) => {
-            event.stopPropagation();
-            onPreviewClear();
-            onMirror(handle.axis);
-          }}
-        >
-          <svg className="mirror-handle-icon" viewBox="0 0 64 24" aria-hidden="true">
-            <path d="M11 12h42" />
-            <path d="m19 4-8 8 8 8" />
-            <path d="m45 4 8 8-8 8" />
-          </svg>
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function TransformOverlay({
-  box,
-  measureKey,
-  editingDimension,
-  editingRotation,
-  rotationReadout,
-  showRotationWheel,
-  hideDimensionMarks,
-  rotationWheelAxis,
-  pinnedRotationWheelView,
-  onBeginTransform,
-  onMoveTransform,
-  onFinishTransform,
-  onHoverMeasure,
-  onPinMeasure,
-  onBeginDimensionEdit,
-  onBeginLiftEdit,
-  onEditingDimensionChange,
-  onCommitDimensionEdit,
-  onCancelDimensionEdit,
-  onBeginRotationEdit,
-  onEditingRotationChange,
-  onCommitRotationEdit,
-  onCancelRotationEdit,
-}: {
-  box: TransformOverlayState;
-  measureKey: string | null;
-  editingDimension: EditingDimension;
-  editingRotation: EditingRotation;
-  rotationReadout: RotationReadout;
-  showRotationWheel: boolean;
-  hideDimensionMarks: boolean;
-  rotationWheelAxis: RotationAxis;
-  pinnedRotationWheelView: PinnedRotationWheelView | null;
-  onBeginTransform: (kind: TransformHandleKind, handleKey: string, event: ReactPointerEvent<Element>) => void;
-  onMoveTransform: (clientX: number, clientY: number, shiftKey?: boolean, altKey?: boolean) => boolean;
-  onFinishTransform: (event: ReactPointerEvent<Element>) => void;
-  onHoverMeasure: (key: string | null) => void;
-  onPinMeasure: (key: string | null) => void;
-  onBeginDimensionEdit: (mark: DimensionMark) => void;
-  onBeginLiftEdit: (handleKey: string, x: number, y: number) => void;
-  onEditingDimensionChange: (value: string) => void;
-  onCommitDimensionEdit: () => void;
-  onCancelDimensionEdit: () => void;
-  onBeginRotationEdit: (handleKey: string, x: number, y: number) => void;
-  onEditingRotationChange: (value: string) => void;
-  onCommitRotationEdit: () => void;
-  onCancelRotationEdit: () => void;
-}) {
-  const marks = measureKey ? (box.dimensions[measureKey] ?? []) : [];
-  const visibleMarks = (hideDimensionMarks ? [] : marks).filter((mark) => mark.key !== editingDimension?.key);
-  const handleMeasureKey = (handle: TransformOverlayState["handles"][number]) => measureKeyForHandle(handle.kind, handle.key, box);
-  const protractorTicks = Array.from({ length: 16 }, (_, index) => {
-    const degrees = index * 22.5 - 90;
-    const radians = THREE.MathUtils.degToRad(degrees);
-    const major = index % 2 === 0;
-    const outer = 94;
-    const inner = major ? 80 : 86;
-    return {
-      key: `tick-${index}`,
-      major,
-      x1: Math.cos(radians) * inner,
-      y1: Math.sin(radians) * inner,
-      x2: Math.cos(radians) * outer,
-      y2: Math.sin(radians) * outer,
-    };
-  });
-  const activeAngle = rotationReadout?.angle ?? 0;
-  const activeRadians = THREE.MathUtils.degToRad(activeAngle - 90);
-  const activeLine = {
-    x: Math.cos(activeRadians) * 92,
-    y: Math.sin(activeRadians) * 92,
-  };
-  const pinnedWheel = pinnedRotationWheelView?.axis === rotationWheelAxis ? pinnedRotationWheelView : null;
-  const plane = pinnedWheel?.plane ?? box.rotationPlanes[rotationWheelAxis];
-  const wheel = pinnedWheel?.wheel ?? box.rotationWheels[rotationWheelAxis] ?? box.rotationWheel;
-  return (
-    <div className="transform-overlay" aria-hidden="true">
-      {showRotationWheel && wheel && plane ? (
-        <svg
-          className={`rotation-protractor-plane axis-${rotationWheelAxis}`}
-          viewBox={`0 0 ${box.width} ${box.height}`}
-          preserveAspectRatio="none"
-          onPointerDown={(event) => onBeginTransform("rotate", `rotate-wheel-${rotationWheelAxis}`, event)}
-          onPointerMove={(event) => onMoveTransform(event.clientX, event.clientY, event.shiftKey, event.altKey)}
-          onPointerUp={onFinishTransform}
-          onPointerCancel={onFinishTransform}
-        >
-          <g transform={`matrix(${plane.a} ${plane.b} ${plane.c} ${plane.d} ${plane.x} ${plane.y})`}>
-            <circle className="rotation-protractor-outer" cx="0" cy="0" r="94" />
-            <circle className="rotation-protractor-inner" cx="0" cy="0" r="68" />
-            {protractorTicks.map((tick) => (
-              <line
-                key={tick.key}
-                className={tick.major ? "rotation-tick major" : "rotation-tick"}
-                x1={tick.x1}
-                y1={tick.y1}
-                x2={tick.x2}
-                y2={tick.y2}
-              />
-            ))}
-            <line className="rotation-zero-line" x1="0" y1="0" x2="0" y2="-92" />
-            <line className="rotation-current-line" x1="0" y1="0" x2={activeLine.x} y2={activeLine.y} />
-            <text className="rotation-zero-label" x="0" y="-75">
-              0°
-            </text>
-          </g>
-        </svg>
-      ) : null}
-      <svg className="transform-guides" viewBox={`0 0 ${box.width} ${box.height}`} preserveAspectRatio="none">
-        <defs>
-          <marker id="dimension-arrow" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto" markerUnits="strokeWidth">
-            <path d="M0 4 L8 0 L5.2 4 L8 8 Z" />
-          </marker>
-        </defs>
-        {box.guides.map((line, index) => (
-          <line key={`guide-${index}`} x1={line.x1} y1={line.y1} x2={line.x2} y2={line.y2} />
-        ))}
-        {visibleMarks.map((mark) => (
-          <g key={mark.key} className="dimension-mark">
-            <line className="dimension-extension" x1={mark.e1x1} y1={mark.e1y1} x2={mark.e1x2} y2={mark.e1y2} />
-            <line className="dimension-extension" x1={mark.e2x1} y1={mark.e2y1} x2={mark.e2x2} y2={mark.e2y2} />
-            <line className="dimension-line" x1={mark.x1} y1={mark.y1} x2={mark.x2} y2={mark.y2} />
-          </g>
-        ))}
-      </svg>
-      {visibleMarks.map((mark) => (
-        <button
-          key={`${mark.key}-label`}
-          className="dimension-label"
-          type="button"
-          style={{ "--overlay-x": `${mark.labelX}px`, "--overlay-y": `${mark.labelY}px` } as CSSProperties}
-          onPointerDown={(event) => event.stopPropagation()}
-          onClick={() => onBeginDimensionEdit(mark)}
-        >
-          {mark.label}
-        </button>
-      ))}
-      {editingDimension ? (
-        <input
-          className="dimension-input"
-          style={{ "--overlay-x": `${editingDimension.x}px`, "--overlay-y": `${editingDimension.y}px` } as CSSProperties}
-          value={editingDimension.value}
-          autoFocus
-          onPointerDown={(event) => event.stopPropagation()}
-          onChange={(event) => onEditingDimensionChange(event.target.value)}
-          onBlur={onCommitDimensionEdit}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              onCommitDimensionEdit();
-            }
-            if (event.key === "Escape") {
-              onCancelDimensionEdit();
-            }
-          }}
-        />
-      ) : null}
-      {editingRotation ? (
-        <label className="rotation-edit" style={{ "--overlay-x": `${editingRotation.x}px`, "--overlay-y": `${editingRotation.y}px` } as CSSProperties}>
-          <input
-            value={editingRotation.value}
-            autoFocus
-            inputMode="decimal"
-            onPointerDown={(event) => event.stopPropagation()}
-            onChange={(event) => onEditingRotationChange(event.target.value)}
-            onBlur={onCommitRotationEdit}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                onCommitRotationEdit();
-              }
-              if (event.key === "Escape") {
-                onCancelRotationEdit();
-              }
-            }}
-          />
-          <span>°</span>
-        </label>
-      ) : null}
-      {box.handles.map((handle) => (
-        <button
-          key={handle.key}
-          className={`transform-handle ${handle.className}`}
-          style={{ "--overlay-x": `${handle.x}px`, "--overlay-y": `${handle.y}px` } as CSSProperties}
-          title={handle.title}
-          onPointerEnter={() => onHoverMeasure(handle.kind === "lift" ? null : handleMeasureKey(handle))}
-          onPointerLeave={() => onHoverMeasure(null)}
-          onPointerDown={(event) => {
-            onPinMeasure(handleMeasureKey(handle));
-            onBeginTransform(handle.kind, handle.key, event);
-          }}
-          onPointerMove={(event) => onMoveTransform(event.clientX, event.clientY, event.shiftKey, event.altKey)}
-          onPointerUp={onFinishTransform}
-          onPointerCancel={onFinishTransform}
-          onClick={(event) => {
-            if (handle.kind === "lift") {
-              event.stopPropagation();
-              onBeginLiftEdit(handle.key, handle.x + 42, handle.y - 32);
-            }
-          }}
-        />
-      ))}
-      {box.rotateHandles.map((handle) => (
-        <button
-          key={handle.key}
-          className={`rotate-handle ${handle.className}`}
-          style={{ "--overlay-x": `${handle.x}px`, "--overlay-y": `${handle.y}px`, "--rotate-handle-angle": `${handle.angle}deg` } as CSSProperties}
-          title="Rotate"
-          onPointerDown={(event) => onBeginTransform("rotate", handle.key, event)}
-          onPointerMove={(event) => onMoveTransform(event.clientX, event.clientY, event.shiftKey, event.altKey)}
-          onPointerUp={onFinishTransform}
-          onPointerCancel={onFinishTransform}
-          onClick={(event) => {
-            event.stopPropagation();
-            onBeginRotationEdit(handle.key, handle.x + 34, handle.y - 28);
-          }}
-        >
-          <span className="rotate-handle-icon" aria-hidden="true">
-            <svg viewBox="0 0 150 150" focusable="false">
-              <path d="m145.4 67.6-12.1 7.7c-6.6-10.8-22.1-27.4-43.6-31.5-3.7-0.7-8-1.3-14.1-1.3-21.5 0-41.5 9.8-55.1 28.9l-3.3 4.1-12.4-7.9c-1.3-0.7-3 0.1-2.9 1.8l1.1 36.1c0.3 1.7 2 2.5 3.1 1.7l30.2-17.6c1.4-0.6 1.4-2.9 0-3.5l-12.1-6.7c9.7-14.8 26.4-28.5 51.2-28.6 20.5-0.1 37.4 9.8 50.7 28.6l-12 6.5c-1.6 0.6-1.5 3.3 0 3.8l30.2 17.4c1.4 0.7 3 0 3-1.7l0.8-36c0-1.5-1.5-2.6-2.7-1.8z" />
-            </svg>
-          </span>
-        </button>
-      ))}
-      {!hideDimensionMarks && rotationReadout ? (
-        <div className="rotation-readout" style={{ "--overlay-x": `${rotationReadout.x}px`, "--overlay-y": `${rotationReadout.y}px` } as CSSProperties}>
-          {rotationReadout.text}
         </div>
       ) : null}
     </div>
