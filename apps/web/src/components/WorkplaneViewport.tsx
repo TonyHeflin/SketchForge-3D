@@ -197,6 +197,8 @@ type RotationHandleSide = "near" | "right" | "far" | "left";
 type RotationHandleSides = Record<RotationAxis, RotationHandleSide>;
 type ShapeUpdatePatch = Partial<WorkplaneShape> & { bakeTransform?: boolean };
 type ResizeSigns = { x: number; z: number };
+type RotationWheelView = { x: number; y: number; radius: number };
+type PinnedRotationWheelView = { axis: RotationAxis; wheel: RotationWheelView; plane: RotationPlaneView };
 type TransformDragState = {
   id: string;
   ids: string[];
@@ -226,7 +228,7 @@ type TransformDragState = {
   rotationScreenCenter?: { x: number; y: number };
   rotationScreenSign?: number;
   rotationStartQuaternion?: THREE.Quaternion;
-  wheelCenter?: { x: number; y: number; radius: number };
+  wheelCenter?: RotationWheelView;
   hasMoved?: boolean;
 };
 
@@ -245,8 +247,8 @@ type TransformOverlayState = {
   handles: Array<{ key: string; className: string; kind: TransformHandleKind; x: number; y: number; title: string }>;
   rotateHandles: Array<{ key: string; className: string; x: number; y: number; angle: number }>;
   dimensions: Record<string, DimensionMark[]>;
-  rotationWheel: { x: number; y: number; radius: number } | null;
-  rotationWheels: Record<RotationAxis, { x: number; y: number; radius: number }>;
+  rotationWheel: RotationWheelView | null;
+  rotationWheels: Record<RotationAxis, RotationWheelView>;
   rotationPlaneCenters: Record<RotationAxis, { x: number; y: number; z: number }>;
   rotationPlanes: Record<RotationAxis, RotationPlaneView>;
 };
@@ -981,6 +983,7 @@ export function WorkplaneViewport({
   const [activeRotationWheel, setActiveRotationWheel] = useState(false);
   const [activeTransformKind, setActiveTransformKind] = useState<TransformHandleKind | null>(null);
   const [rotationWheelAxis, setRotationWheelAxis] = useState<RotationAxis>("y");
+  const [pinnedRotationWheelView, setPinnedRotationWheelView] = useState<PinnedRotationWheelView | null>(null);
   const [editingDimension, setEditingDimension] = useState<EditingDimension>(null);
   const [editingRotation, setEditingRotation] = useState<EditingRotation>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -1301,6 +1304,7 @@ export function WorkplaneViewport({
       const startWorldY = yStart + liftOffset;
       const overlay = transformOverlayRef.current;
       const wheel = kind === "rotate" ? (overlay?.rotationWheels[rotationAxis] ?? overlay?.rotationWheel ?? undefined) : undefined;
+      const rotationPlane = kind === "rotate" ? overlay?.rotationPlanes[rotationAxis] : undefined;
       const rotationPlaneCenterData = kind === "rotate" ? overlay?.rotationPlaneCenters[rotationAxis] : undefined;
       const rotationPlaneCenter = rotationPlaneCenterData
         ? new THREE.Vector3(rotationPlaneCenterData.x, rotationPlaneCenterData.y, rotationPlaneCenterData.z)
@@ -1332,6 +1336,9 @@ export function WorkplaneViewport({
       setActiveTransformKind(kind);
       if (kind === "rotate") {
         setRotationWheelAxis(rotationAxis);
+        setPinnedRotationWheelView(wheel && rotationPlane ? { axis: rotationAxis, wheel: { ...wheel }, plane: { ...rotationPlane } } : null);
+      } else {
+        setPinnedRotationWheelView(null);
       }
       transformRef.current = {
         id: shape.id,
@@ -1571,6 +1578,7 @@ export function WorkplaneViewport({
     transformRef.current = null;
     setActiveRotationWheel(false);
     setActiveTransformKind(null);
+    setPinnedRotationWheelView(null);
     setRotationReadout(null);
     if (threeRef.current) {
       threeRef.current.controls.enabled = true;
@@ -1794,6 +1802,7 @@ export function WorkplaneViewport({
         const scaleSigns = handle.kind === "scale" ? resizeSignsForHandle(resizeHandleKey) : undefined;
         const scaleAnchorPoint = handle.kind === "scale" && scaleSigns ? resizeAnchorPointForFrame(frame, scaleSigns) : undefined;
         const wheel = handle.kind === "rotate" ? (overlay?.rotationWheels[rotationAxis] ?? overlay?.rotationWheel ?? undefined) : undefined;
+        const rotationPlane = handle.kind === "rotate" ? overlay?.rotationPlanes[rotationAxis] : undefined;
         const rotationPlaneCenterData = handle.kind === "rotate" ? overlay?.rotationPlaneCenters[rotationAxis] : undefined;
         const rotationPlaneCenter = rotationPlaneCenterData
           ? new THREE.Vector3(rotationPlaneCenterData.x, rotationPlaneCenterData.y, rotationPlaneCenterData.z)
@@ -1816,6 +1825,9 @@ export function WorkplaneViewport({
         setActiveTransformKind(handle.kind);
         if (handle.kind === "rotate") {
           setRotationWheelAxis(rotationAxis);
+          setPinnedRotationWheelView(wheel && rotationPlane ? { axis: rotationAxis, wheel: { ...wheel }, plane: { ...rotationPlane } } : null);
+        } else {
+          setPinnedRotationWheelView(null);
         }
         transformRef.current = {
           id: handle.id,
@@ -2264,6 +2276,7 @@ export function WorkplaneViewport({
               showRotationWheel={activeRotationWheel}
               hideDimensionMarks={activeTransformKind === "scale"}
               rotationWheelAxis={rotationWheelAxis}
+              pinnedRotationWheelView={pinnedRotationWheelView}
               onBeginTransform={beginTransform}
               onMoveTransform={updateTransform}
               onFinishTransform={finishTransform}
@@ -2597,6 +2610,7 @@ function TransformOverlay({
   showRotationWheel,
   hideDimensionMarks,
   rotationWheelAxis,
+  pinnedRotationWheelView,
   onBeginTransform,
   onMoveTransform,
   onFinishTransform,
@@ -2620,6 +2634,7 @@ function TransformOverlay({
   showRotationWheel: boolean;
   hideDimensionMarks: boolean;
   rotationWheelAxis: RotationAxis;
+  pinnedRotationWheelView: PinnedRotationWheelView | null;
   onBeginTransform: (kind: TransformHandleKind, handleKey: string, event: ReactPointerEvent<Element>) => void;
   onMoveTransform: (clientX: number, clientY: number, shiftKey?: boolean, altKey?: boolean) => boolean;
   onFinishTransform: (event: ReactPointerEvent<Element>) => void;
@@ -2659,8 +2674,9 @@ function TransformOverlay({
     x: Math.cos(activeRadians) * 92,
     y: Math.sin(activeRadians) * 92,
   };
-  const plane = box.rotationPlanes[rotationWheelAxis];
-  const wheel = box.rotationWheels[rotationWheelAxis] ?? box.rotationWheel;
+  const pinnedWheel = pinnedRotationWheelView?.axis === rotationWheelAxis ? pinnedRotationWheelView : null;
+  const plane = pinnedWheel?.plane ?? box.rotationPlanes[rotationWheelAxis];
+  const wheel = pinnedWheel?.wheel ?? box.rotationWheels[rotationWheelAxis] ?? box.rotationWheel;
   return (
     <div className="transform-overlay" aria-hidden="true">
       {showRotationWheel && wheel && plane ? (
