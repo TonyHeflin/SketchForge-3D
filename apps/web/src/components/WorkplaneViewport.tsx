@@ -1,7 +1,7 @@
 "use client";
 
-import { Box, Check, ChevronDown, ChevronUp, Expand, Home, LockKeyhole, LockKeyholeOpen, Minus, Plus, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type Dispatch, type DragEvent, type MutableRefObject, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
+import { Box, Check, Expand, Home, Minus, Plus } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type DragEvent, type MutableRefObject, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
@@ -13,9 +13,11 @@ import droidSerifBoldFontJson from "three/examples/fonts/droid/droid_serif_bold.
 import gentilisBoldFontJson from "three/examples/fonts/gentilis_bold.typeface.json";
 import helvetikerBoldFontJson from "three/examples/fonts/helvetiker_bold.typeface.json";
 import optimerBoldFontJson from "three/examples/fonts/optimer_bold.typeface.json";
-import { ToolbarHideSelectedIcon } from "@/components/icons";
 import { AlignOverlay, MirrorOverlay, type AlignOverlayState, type MirrorOverlayState } from "@/components/workplane/ActionOverlays";
+import { ShapeInspector, SnapGridControl } from "@/components/workplane/ShapeInspector";
+import { WorkspaceSettingsModal } from "@/components/workplane/WorkspaceSettingsModal";
 import { DEFAULT_SNAP_GRID, DEFAULT_WORKPLANE_WORKSPACE, normalizeSnapGrid, normalizeWorkspaceSettings, workplaneSettingsFingerprint } from "@/lib/workplaneSettings";
+import { cleanNearZero, cleanRotationDegrees, fallbackSolidColor, mirroredAxisCount, mirrorSign, proportionalResizeScale, resizedShapeSize, shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
 import {
   TransformOverlay,
   getElevationMeasureKey,
@@ -33,23 +35,11 @@ import {
 } from "@/components/workplane/TransformOverlay";
 import type { AlignAxis, AlignHandleStatus, AlignTarget, GridSize, ShapeAsset, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
-const gridSizes: GridSize[] = ["Off", "0.1 mm", "0.25 mm", "0.5 mm", "1.0 mm", "2.0 mm", "5.0 mm", "Brick"];
 const WORKPLANE_WIDTH = 200;
 const WORKPLANE_DEPTH = 140;
-const MIN_WORKSPACE_SIZE = 60;
-const MAX_WORKSPACE_SIZE = 2000;
 const MIN_GRID_BLOCK_SIZE = 1;
 const MAX_GRID_BLOCK_SIZE = 200;
 const DEFAULT_WORKSPACE = DEFAULT_WORKPLANE_WORKSPACE;
-const workspaceSizePresets = [
-  { label: "200 x 200 mm", width: 200, depth: 200 },
-  { label: "300 x 300 mm", width: 300, depth: 300 },
-  { label: "500 x 500 mm", width: 500, depth: 500 },
-  { label: "1000 x 1000 mm", width: 1000, depth: 1000 },
-  { label: "2000 x 2000 mm", width: 2000, depth: 2000 },
-  { label: "Custom", width: 200, depth: 200 },
-];
-const gridBlockPresets = ["1 mm", "2.5 mm", "5 mm", "10 mm", "20 mm", "50 mm", "100 mm", "Custom"] as const;
 const CAMERA_HOME = new THREE.Vector3(118, 96, 118);
 const CAMERA_TARGET = new THREE.Vector3(0, 0, 0);
 const MIN_SHAPE_SIZE = 0.01;
@@ -57,37 +47,26 @@ const MIN_ELEVATION = -180;
 const MAX_ELEVATION = 220;
 const CAMERA_MIN_TARGET_Y = -70;
 const CAMERA_MAX_TARGET_Y = 120;
-const solidColors = [
-  "#d41721",
-  "#ff4b4b",
-  "#ff7a1a",
-  "#d97813",
-  "#f6a21a",
-  "#f2cf10",
-  "#f7e65a",
-  "#a8d642",
-  "#33983d",
-  "#1fb66d",
-  "#18b99a",
-  "#0098c7",
-  "#49c7ef",
-  "#3b82f6",
-  "#294c93",
-  "#5b5ce2",
-  "#6e2786",
-  "#9b3bd2",
-  "#c9009a",
-  "#f062b6",
-  "#8a5a2b",
-  "#b98254",
-  "#f2caa0",
-  "#ffffff",
-  "#cfd8df",
-  "#8a98a6",
-  "#4b5563",
-  "#111111",
-];
-const textFontOptions = ["Multilanguage", "Sans", "Serif", "Script", "Monospace", "Rounded", "Stencil"];
+const SHAPE_KINDS = new Set<ShapeAsset["kind"]>([
+  "box",
+  "cylinder",
+  "sphere",
+  "sketch",
+  "scribble",
+  "cone",
+  "pyramid",
+  "roof",
+  "text",
+  "roundRoof",
+  "halfSphere",
+  "torus",
+  "tube",
+  "ring",
+  "wedge",
+  "polygon",
+  "icosahedron",
+  "mesh",
+]);
 const fontLoader = new FontLoader();
 const textFonts: Record<string, Font> = {
   Multilanguage: fontLoader.parse(helvetikerBoldFontJson as FontData),
@@ -104,6 +83,36 @@ const importedGeometryCache = new WeakMap<
 >();
 const imageTextureLoader = new THREE.TextureLoader();
 const IMPORTED_SELECTED_EDGE_TRIANGLE_LIMIT = 40000;
+
+function parseDroppedShapeAsset(raw: string): ShapeAsset | null {
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (!value || typeof value !== "object") {
+      return null;
+    }
+    const asset = value as Partial<ShapeAsset>;
+    if (
+      typeof asset.id !== "string" ||
+      typeof asset.name !== "string" ||
+      typeof asset.src !== "string" ||
+      typeof asset.color !== "string" ||
+      !SHAPE_KINDS.has(asset.kind as ShapeAsset["kind"]) ||
+      (asset.hole !== undefined && typeof asset.hole !== "boolean")
+    ) {
+      return null;
+    }
+    return {
+      id: asset.id,
+      name: asset.name,
+      src: asset.src,
+      kind: asset.kind as ShapeAsset["kind"],
+      color: asset.color,
+      hole: asset.hole,
+    };
+  } catch {
+    return null;
+  }
+}
 
 type WorkplaneViewportProps = {
   shapes: WorkplaneShape[];
@@ -313,13 +322,6 @@ function snapPositionValue(value: number, step: number, min: number, max: number
   return clamp(step > 0 ? snapValue(value, step) : value, min, max);
 }
 
-function gridBlockSizeForPreset(preset: string, fallback: number) {
-  if (preset === "Custom") {
-    return clamp(fallback, MIN_GRID_BLOCK_SIZE, MAX_GRID_BLOCK_SIZE);
-  }
-  return clamp(Number.parseFloat(preset) || DEFAULT_WORKSPACE.gridBlockSize, MIN_GRID_BLOCK_SIZE, MAX_GRID_BLOCK_SIZE);
-}
-
 function projectedScreenY(state: ThreeState, shape: WorkplaneShape, y: number) {
   return projectedScreenYAt(state, shape.x, shape.z, y);
 }
@@ -345,19 +347,6 @@ function projectedScreenYPerWorldUnitAt(state: ThreeState, x: number, z: number,
 
 function screenAngle(clientX: number, clientY: number, center: { x: number; y: number }) {
   return Math.atan2(clientY - center.y, clientX - center.x);
-}
-
-function normalizeDegrees(value: number) {
-  return ((value % 360) + 360) % 360;
-}
-
-function cleanRotationDegrees(value: number) {
-  if (!Number.isFinite(value)) {
-    return 0;
-  }
-  const normalized = normalizeDegrees(value);
-  const rounded = Number(normalized.toFixed(1));
-  return rounded < 0.5 || rounded >= 359.5 || Object.is(rounded, -0) ? 0 : rounded;
 }
 
 function unwrapRadians(value: number) {
@@ -551,10 +540,6 @@ function selectionFrameCorners(frame: SelectionFrame) {
   return corners;
 }
 
-function cleanNearZero(value: number, epsilon = 0.005) {
-  return Math.abs(value) < epsilon ? 0 : value;
-}
-
 function selectionWorldYBounds(frame: SelectionFrame) {
   const corners = selectionFrameCorners(frame);
   const min = cleanNearZero(Math.min(...corners.map((corner) => corner.y)));
@@ -592,10 +577,6 @@ function resizeCenterFromAnchor(frame: SelectionFrame, anchor: THREE.Vector3, si
     .add(frame.yAxis.clone().multiplyScalar(frame.height / 2))
     .add(frame.xAxis.clone().multiplyScalar(signs.x ? (signs.x * width) / 2 : 0))
     .add(frame.zAxis.clone().multiplyScalar(signs.z ? (signs.z * depth) / 2 : 0));
-}
-
-function resizedShapeSize(width: number, depth: number) {
-  return Math.max(width, depth);
 }
 
 function resizedShapePatchFromFrame(shape: WorkplaneShape, center: THREE.Vector3, width: number, depth: number): Partial<WorkplaneShape> {
@@ -779,9 +760,10 @@ function resizeShapeFromFrameHandle(
   let nextDepth = axisResize(depth, localDelta.z, signs.z);
 
   if (shiftKey && signs.x && signs.z) {
-    const uniform = Math.max(nextWidth, nextDepth);
-    nextWidth = uniform;
-    nextDepth = uniform;
+    const scale = proportionalResizeScale(width, depth, nextWidth, nextDepth);
+    const limitedScale = clamp(scale, MIN_SHAPE_SIZE / Math.max(MIN_SHAPE_SIZE, Math.min(width, depth)), maxSize / Math.max(width, depth));
+    nextWidth = snapDimension(width * limitedScale, step, MIN_SHAPE_SIZE, maxSize);
+    nextDepth = snapDimension(depth * limitedScale, step, MIN_SHAPE_SIZE, maxSize);
   }
 
   const nextCenter = altKey
@@ -821,14 +803,17 @@ function resizeSelectionFromHandle(
   let nextX = axisResize(frame.width, localDelta.x, signs.x);
   let nextZ = axisResize(frame.depth, localDelta.z, signs.z);
   if (shiftKey && signs.x && signs.z) {
-    const uniform = Math.max(nextX.size, nextZ.size);
+    const scale = proportionalResizeScale(frame.width, frame.depth, nextX.size, nextZ.size);
+    const limitedScale = clamp(scale, MIN_SHAPE_SIZE / Math.max(MIN_SHAPE_SIZE, Math.min(frame.width, frame.depth)), 260 / Math.max(frame.width, frame.depth));
+    const width = snapDimension(frame.width * limitedScale, step, MIN_SHAPE_SIZE, 260);
+    const depth = snapDimension(frame.depth * limitedScale, step, MIN_SHAPE_SIZE, 260);
     nextX = {
-      size: uniform,
-      scale: uniform / Math.max(MIN_SHAPE_SIZE, frame.width),
+      size: width,
+      scale: width / Math.max(MIN_SHAPE_SIZE, frame.width),
     };
     nextZ = {
-      size: uniform,
-      scale: uniform / Math.max(MIN_SHAPE_SIZE, frame.depth),
+      size: depth,
+      scale: depth / Math.max(MIN_SHAPE_SIZE, frame.depth),
     };
   }
 
@@ -2114,7 +2099,10 @@ export function WorkplaneViewport({
         return;
       }
 
-      const asset = JSON.parse(raw) as ShapeAsset;
+      const asset = parseDroppedShapeAsset(raw);
+      if (!asset) {
+        return;
+      }
       const point = toPlanePoint(event.clientX, event.clientY);
       onAddShape(asset, point ? { ...point, elevation: placementElevationRef.current } : { x: 0, z: 0, elevation: placementElevationRef.current });
     },
@@ -2282,647 +2270,6 @@ export function WorkplaneViewport({
         />
       ) : null}
     </main>
-  );
-}
-
-function ShapeInspector({
-  shape,
-  snap,
-  snapOpen,
-  onUpdate,
-  onClose,
-  onSnapChange,
-  onSnapOpenChange,
-}: {
-  shape: WorkplaneShape;
-  snap: GridSize;
-  snapOpen: boolean;
-  onUpdate: (patch: Partial<WorkplaneShape>) => void;
-  onClose: () => void;
-  onSnapChange: Dispatch<SetStateAction<GridSize>>;
-  onSnapOpenChange: Dispatch<SetStateAction<boolean>>;
-}) {
-  const solidColor = shape.hole ? fallbackSolidColor(shape) : shape.color;
-  const locked = Boolean(shape.locked);
-  const properties = getShapeProperties(shape, onUpdate);
-  const [propertiesOpen, setPropertiesOpen] = useState(true);
-  const [colorOpen, setColorOpen] = useState(false);
-
-  return (
-    <aside className="shape-inspector" aria-label={`${shape.name} shape settings`} onPointerDown={(event) => event.stopPropagation()}>
-      <div className="shape-inspector-header">
-        <button className="inspector-header-icon" aria-label="Close shape settings" onClick={onClose}>
-          <ChevronUp size={26} strokeWidth={2.8} />
-        </button>
-        <strong>{shape.name}</strong>
-        <div className="inspector-header-actions">
-          <button className={locked ? "inspector-header-icon active" : "inspector-header-icon"} aria-label={locked ? "Unlock shape" : "Lock shape"} onClick={() => onUpdate({ locked: !locked })}>
-            {locked ? <LockKeyhole size={31} strokeWidth={2.4} /> : <LockKeyholeOpen size={31} strokeWidth={2.4} />}
-          </button>
-          <button className={shape.hidden ? "inspector-header-icon active" : "inspector-header-icon"} aria-label={shape.hidden ? "Show shape" : "Hide shape"} onClick={() => onUpdate({ hidden: !shape.hidden })}>
-            <ToolbarHideSelectedIcon />
-          </button>
-        </div>
-      </div>
-
-      <div className="shape-state-card" role="group" aria-label="Shape mode">
-        <button
-          className={!shape.hole ? "active solid-choice" : "solid-choice"}
-          onClick={() => {
-            const wasHole = Boolean(shape.hole);
-            onUpdate({ hole: false, color: solidColor });
-            setColorOpen((open) => (wasHole ? false : !open));
-          }}
-          disabled={locked}
-          aria-pressed={!shape.hole}
-          aria-expanded={colorOpen}
-        >
-          <span className="large-solid-swatch" style={{ "--swatch": solidColor } as CSSProperties} />
-          <span>Solid</span>
-        </button>
-        <button
-          className={shape.hole ? "active hole-choice" : "hole-choice"}
-          onClick={() => {
-            onUpdate({ hole: true, color: "#b8c2cc" });
-            setColorOpen(false);
-          }}
-          disabled={locked}
-          aria-pressed={shape.hole}
-        >
-          <span className="large-hole-swatch" />
-          <span>Hole</span>
-        </button>
-      </div>
-
-      {colorOpen ? (
-      <div className="color-card" aria-label="Shape color">
-        <div className="color-card-header">
-          <span>Color</span>
-          <span className="color-value">{solidColor.toUpperCase()}</span>
-        </div>
-        <div className="color-grid">
-          {solidColors.map((color) => (
-            <button
-              key={color}
-              className={solidColor.toLowerCase() === color.toLowerCase() && !shape.hole ? "selected" : ""}
-              type="button"
-              style={{ "--shape-swatch": color } as CSSProperties}
-              title={color.toUpperCase()}
-              aria-label={`Set color ${color}`}
-              disabled={locked}
-              onClick={() => {
-                onUpdate({ color, hole: false });
-                setColorOpen(false);
-              }}
-            />
-          ))}
-          <label className={locked ? "custom-color disabled" : "custom-color"} title="Custom color">
-            <input
-              type="color"
-              value={solidColor}
-              disabled={locked}
-              onChange={(event) => {
-                onUpdate({ color: event.target.value, hole: false });
-                setColorOpen(false);
-              }}
-            />
-            <span>Custom</span>
-          </label>
-        </div>
-      </div>
-      ) : null}
-
-      <div className="property-card">
-        <button
-          className="property-card-header"
-          type="button"
-          aria-expanded={propertiesOpen}
-          aria-controls={`properties-${shape.id}`}
-          onClick={() => setPropertiesOpen((open) => !open)}
-        >
-          <span>Properties</span>
-          <ChevronUp className={propertiesOpen ? "" : "collapsed"} size={25} strokeWidth={2.8} />
-        </button>
-        {propertiesOpen ? (
-          <div className="property-list" id={`properties-${shape.id}`}>
-            {properties.map((property) => {
-              if (property.type === "text") {
-                return <TextProperty key={property.label} {...property} disabled={locked} />;
-              }
-              if (property.type === "select") {
-                return <SelectProperty key={property.label} {...property} disabled={locked} />;
-              }
-              return <RangeProperty key={property.label} {...property} disabled={locked} />;
-            })}
-          </div>
-        ) : null}
-      </div>
-      <div className="inspector-snap-dock">
-        <SnapGridControl snap={snap} snapOpen={snapOpen} onSnapChange={onSnapChange} onSnapOpenChange={onSnapOpenChange} />
-      </div>
-    </aside>
-  );
-}
-
-function SnapGridControl({
-  snap,
-  snapOpen,
-  onSnapChange,
-  onSnapOpenChange,
-}: {
-  snap: GridSize;
-  snapOpen: boolean;
-  onSnapChange: Dispatch<SetStateAction<GridSize>>;
-  onSnapOpenChange: Dispatch<SetStateAction<boolean>>;
-}) {
-  return (
-    <div className="snap-row">
-      <span>Snap Grid</span>
-      <button className="snap-select" onClick={() => onSnapOpenChange((value) => !value)}>
-        {snap}
-        <ChevronDown size={12} fill="currentColor" />
-      </button>
-      {snapOpen ? (
-        <div className="snap-menu">
-          {gridSizes.map((size) => (
-            <button
-              key={size}
-              className={size === snap ? "selected" : ""}
-              onClick={() => {
-                onSnapChange(size);
-                onSnapOpenChange(false);
-              }}
-            >
-              {size}
-            </button>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-type RangePropertyConfig = {
-  type?: "range";
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step?: number;
-  onChange: (value: number) => void;
-};
-
-type TextPropertyConfig = {
-  type: "text";
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-};
-
-type SelectPropertyConfig = {
-  type: "select";
-  label: string;
-  value: string;
-  options: string[];
-  onChange: (value: string) => void;
-};
-
-type ShapePropertyConfig = RangePropertyConfig | TextPropertyConfig | SelectPropertyConfig;
-
-function fallbackSolidColor(shape: WorkplaneShape) {
-  if (shape.kind === "cylinder") return "#d97813";
-  if (shape.kind === "sphere") return "#0098c7";
-  if (shape.kind === "cone") return "#6e2786";
-  if (shape.kind === "pyramid") return "#f2cf10";
-  return "#d41721";
-}
-
-function formatPanelNumber(value: number) {
-  return (Math.abs(value) < 0.005 ? 0 : value).toFixed(2);
-}
-
-function getShapeProperties(shape: WorkplaneShape, onUpdate: (patch: Partial<WorkplaneShape>) => void): ShapePropertyConfig[] {
-  const width = shapeWidth(shape);
-  const depth = shapeDepth(shape);
-  const setWidth = (value: number) => onUpdate({ width: value, size: resizedShapeSize(value, depth) });
-  const setDepth = (value: number) => onUpdate({ depth: value, size: resizedShapeSize(width, value) });
-  const setConeWidth = (value: number) => onUpdate({ width: value, baseRadius: value / 2, size: resizedShapeSize(value, depth) });
-  const setBaseRadius = (value: number) => onUpdate({ baseRadius: value, width: value * 2, depth: value * 2, size: value * 2 });
-
-  if (shape.kind === "box") {
-    return [
-      { label: "Radius", value: shape.radius ?? 0, min: 0, max: 10, onChange: (radius) => onUpdate({ radius }) },
-      { label: "Steps", value: shape.steps ?? 10, min: 1, max: 64, step: 1, onChange: (steps) => onUpdate({ steps: Math.round(steps) }) },
-      { label: "Length", value: depth, min: MIN_SHAPE_SIZE, max: 160, onChange: setDepth },
-      { label: "Width", value: width, min: MIN_SHAPE_SIZE, max: 160, onChange: setWidth },
-      { label: "Height", value: shape.height, min: MIN_SHAPE_SIZE, max: 160, onChange: (height) => onUpdate({ height }) },
-    ];
-  }
-
-  if (shape.kind === "cylinder") {
-    return [
-      { label: "Sides", value: shape.sides ?? 96, min: 3, max: 128, step: 1, onChange: (sides) => onUpdate({ sides: Math.round(sides) }) },
-      { label: "Bevel", value: shape.bevel ?? 0, min: 0, max: 10, onChange: (bevel) => onUpdate({ bevel }) },
-      { label: "Segments", value: shape.segments ?? 1, min: 1, max: 24, step: 1, onChange: (segments) => onUpdate({ segments: Math.round(segments) }) },
-      { label: "Length", value: depth, min: MIN_SHAPE_SIZE, max: 160, onChange: setDepth },
-      { label: "Width", value: width, min: MIN_SHAPE_SIZE, max: 160, onChange: setWidth },
-      { label: "Height", value: shape.height, min: MIN_SHAPE_SIZE, max: 160, onChange: (height) => onUpdate({ height }) },
-    ];
-  }
-
-  if (shape.kind === "sphere") {
-    return [
-      { label: "Steps", value: shape.steps ?? 24, min: 6, max: 64, step: 1, onChange: (steps) => onUpdate({ steps: Math.round(steps) }) },
-      { label: "Length", value: depth, min: MIN_SHAPE_SIZE, max: 160, onChange: setDepth },
-      { label: "Width", value: width, min: MIN_SHAPE_SIZE, max: 160, onChange: setWidth },
-      { label: "Height", value: shape.height, min: MIN_SHAPE_SIZE, max: 160, onChange: (height) => onUpdate({ height }) },
-    ];
-  }
-
-  if (shape.kind === "halfSphere") {
-    return [
-      { label: "Steps", value: shape.steps ?? 32, min: 6, max: 64, step: 1, onChange: (steps) => onUpdate({ steps: Math.round(steps) }) },
-      { label: "Length", value: depth, min: MIN_SHAPE_SIZE, max: 160, onChange: setDepth },
-      { label: "Width", value: width, min: MIN_SHAPE_SIZE, max: 160, onChange: setWidth },
-      { label: "Height", value: shape.height, min: MIN_SHAPE_SIZE, max: 160, onChange: (height) => onUpdate({ height }) },
-    ];
-  }
-
-  if (shape.kind === "cone") {
-    return [
-      { label: "Top Radius", value: shape.topRadius ?? 0, min: 0, max: 40, onChange: (topRadius) => onUpdate({ topRadius }) },
-      { label: "Base Radius", value: shape.baseRadius ?? width / 2, min: MIN_SHAPE_SIZE, max: 80, onChange: setBaseRadius },
-      { label: "Length", value: depth, min: MIN_SHAPE_SIZE, max: 160, onChange: setDepth },
-      { label: "Width", value: width, min: MIN_SHAPE_SIZE, max: 160, onChange: setConeWidth },
-      { label: "Height", value: shape.height, min: MIN_SHAPE_SIZE, max: 160, onChange: (height) => onUpdate({ height }) },
-      { label: "Sides", value: shape.sides ?? 96, min: 3, max: 128, step: 1, onChange: (sides) => onUpdate({ sides: Math.round(sides) }) },
-    ];
-  }
-
-  if (shape.kind === "pyramid") {
-    return [
-      { label: "Sides", value: shape.sides ?? 4, min: 3, max: 24, step: 1, onChange: (sides) => onUpdate({ sides: Math.round(sides) }) },
-      { label: "Length", value: depth, min: MIN_SHAPE_SIZE, max: 160, onChange: setDepth },
-      { label: "Width", value: width, min: MIN_SHAPE_SIZE, max: 160, onChange: setWidth },
-      { label: "Height", value: shape.height, min: MIN_SHAPE_SIZE, max: 160, onChange: (height) => onUpdate({ height }) },
-    ];
-  }
-
-  if (shape.kind === "roundRoof") {
-    return [
-      { label: "Sides", value: shape.sides ?? 64, min: 4, max: 128, step: 1, onChange: (sides) => onUpdate({ sides: Math.round(sides) }) },
-      { label: "Length", value: depth, min: MIN_SHAPE_SIZE, max: 160, onChange: setDepth },
-      { label: "Width", value: width, min: MIN_SHAPE_SIZE, max: 160, onChange: setWidth },
-      { label: "Height", value: shape.height, min: MIN_SHAPE_SIZE, max: 160, onChange: (height) => onUpdate({ height }) },
-    ];
-  }
-
-  if (shape.kind === "tube" || shape.kind === "ring") {
-    return [
-      { label: "Thickness", value: shape.bevel ?? 4, min: 0.5, max: 20, onChange: (bevel) => onUpdate({ bevel }) },
-      { label: "Length", value: depth, min: MIN_SHAPE_SIZE, max: 160, onChange: setDepth },
-      { label: "Width", value: width, min: MIN_SHAPE_SIZE, max: 160, onChange: setWidth },
-      { label: "Height", value: shape.height, min: MIN_SHAPE_SIZE, max: 160, onChange: (height) => onUpdate({ height }) },
-    ];
-  }
-
-  if (shape.kind === "text") {
-    return [
-      {
-        type: "text",
-        label: "Text",
-        value: shape.text ?? "TEXT",
-        onChange: (text) => {
-          const nextText = text.slice(0, 24) || " ";
-          const nextWidth = clamp(Math.max(46, nextText.length * 19), 46, 260);
-          onUpdate({ text: nextText, width: nextWidth, size: nextWidth });
-        },
-      },
-      { type: "select", label: "Font", value: shape.font ?? "Multilanguage", options: textFontOptions, onChange: (font) => onUpdate({ font }) },
-      { label: "Height", value: shape.height, min: MIN_SHAPE_SIZE, max: 40, onChange: (height) => onUpdate({ height }) },
-      { label: "Bevel", value: shape.bevel ?? 0, min: 0, max: 8, onChange: (bevel) => onUpdate({ bevel }) },
-      { label: "Segments", value: shape.segments ?? 0, min: 0, max: 24, step: 1, onChange: (segments) => onUpdate({ segments: Math.round(segments) }) },
-    ];
-  }
-
-  return [
-    { label: "Length", value: depth, min: MIN_SHAPE_SIZE, max: 160, onChange: setDepth },
-    { label: "Width", value: width, min: MIN_SHAPE_SIZE, max: 160, onChange: setWidth },
-    { label: "Height", value: shape.height, min: MIN_SHAPE_SIZE, max: 160, onChange: (height) => onUpdate({ height }) },
-  ];
-}
-
-function RangeProperty({ label, value, min, max, step = 0.01, disabled, onChange }: RangePropertyConfig & { disabled?: boolean }) {
-  const safeValue = clamp(value, min, max);
-  const position = ((safeValue - min) / Math.max(1, max - min)) * 100;
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(formatPanelNumber(safeValue));
-  const commitDraft = () => {
-    const next = Number(draft);
-    onChange(clamp(Number.isFinite(next) ? next : safeValue, min, max));
-    setEditing(false);
-  };
-  return (
-    <label className="range-property" style={{ "--slider-pos": `${position}%` } as CSSProperties}>
-      <span>{label}</span>
-      <div className="range-control">
-        {editing ? (
-          <input
-            className="range-value-input"
-            type="number"
-            min={min}
-            max={max}
-            step={step}
-            value={draft}
-            autoFocus
-            onChange={(event) => setDraft(event.currentTarget.value)}
-            onBlur={commitDraft}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.currentTarget.blur();
-              } else if (event.key === "Escape") {
-                setDraft(formatPanelNumber(safeValue));
-                setEditing(false);
-              }
-            }}
-          />
-        ) : (
-          <output
-            onDoubleClick={(event) => {
-              if (disabled) {
-                return;
-              }
-              event.preventDefault();
-              setDraft(formatPanelNumber(safeValue));
-              setEditing(true);
-            }}
-          >
-            {formatPanelNumber(safeValue)}
-          </output>
-        )}
-        <input
-          type="range"
-          min={min}
-          max={max}
-          step={step}
-          value={safeValue}
-          disabled={disabled}
-          onChange={(event) => {
-            const next = Number(event.currentTarget.value);
-            onChange(clamp(Number.isFinite(next) ? next : min, min, max));
-          }}
-        />
-      </div>
-    </label>
-  );
-}
-
-function TextProperty({ label, value, disabled, onChange }: TextPropertyConfig & { disabled?: boolean }) {
-  return (
-    <label className="text-property">
-      <span>{label}</span>
-      <input
-        type="text"
-        value={value}
-        disabled={disabled}
-        maxLength={24}
-        spellCheck={false}
-        onChange={(event) => onChange(event.currentTarget.value)}
-      />
-    </label>
-  );
-}
-
-function SelectProperty({ label, value, options, disabled, onChange }: SelectPropertyConfig & { disabled?: boolean }) {
-  return (
-    <label className="select-property">
-      <span>{label}</span>
-      <select value={value} disabled={disabled} onChange={(event) => onChange(event.currentTarget.value)}>
-        {options.map((option) => (
-          <option key={option} value={option}>
-            {option}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
-function DimensionInput({
-  label,
-  value,
-  min,
-  max,
-  step = 0.01,
-  unit = "mm",
-  onChange,
-}: {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step?: number;
-  unit?: string;
-  onChange: (value: number) => void;
-}) {
-  return (
-    <label className="dimension-input">
-      <span>{label}</span>
-      <input
-        type="number"
-        min={min}
-        max={max}
-        step={step}
-        value={formatPanelNumber(value)}
-        onChange={(event) => {
-          const next = Number(event.currentTarget.value);
-          onChange(clamp(Number.isFinite(next) ? next : min, min, max));
-        }}
-      />
-      <span>{unit}</span>
-    </label>
-  );
-}
-
-function WorkspaceSettingsModal({
-  workspace,
-  snap,
-  onWorkspaceChange,
-  onSnapChange,
-  onClose,
-}: {
-  workspace: WorkspaceSettings;
-  snap: GridSize;
-  onWorkspaceChange: (next: WorkspaceSettings) => void;
-  onSnapChange: (next: GridSize) => void;
-  onClose: () => void;
-}) {
-  const patchWorkspace = (patch: Partial<WorkspaceSettings>) => onWorkspaceChange({ ...workspace, ...patch });
-  const setDimension = (key: "width" | "depth", value: string) => {
-    const next = clamp(Number.parseFloat(value) || DEFAULT_WORKSPACE[key], MIN_WORKSPACE_SIZE, MAX_WORKSPACE_SIZE);
-    patchWorkspace({ [key]: next, sizePreset: "Custom" } as Partial<WorkspaceSettings>);
-  };
-  const setWorkspaceSizePreset = (sizePreset: string) => {
-    const preset = workspaceSizePresets.find((entry) => entry.label === sizePreset);
-    if (!preset || sizePreset === "Custom") {
-      patchWorkspace({ sizePreset: "Custom" });
-      return;
-    }
-    patchWorkspace({ sizePreset, width: preset.width, depth: preset.depth });
-  };
-  const setGridBlockPreset = (gridBlockPreset: string) => {
-    patchWorkspace({ gridBlockPreset, gridBlockSize: gridBlockSizeForPreset(gridBlockPreset, workspace.gridBlockSize) });
-  };
-  const setGridBlockSize = (value: string) => {
-    const next = clamp(Number.parseFloat(value) || DEFAULT_WORKSPACE.gridBlockSize, MIN_GRID_BLOCK_SIZE, MAX_GRID_BLOCK_SIZE);
-    patchWorkspace({ gridBlockPreset: "Custom", gridBlockSize: next });
-  };
-
-  return (
-    <div className="workspace-modal" role="dialog" aria-modal="true" aria-label="Workspace settings">
-      <div className="workspace-modal-card" onPointerDown={(event) => event.stopPropagation()}>
-        <header className="workspace-modal-header">
-          <strong>Workspace settings</strong>
-          <button aria-label="Close settings" onClick={onClose}>
-            <X size={18} />
-          </button>
-        </header>
-
-        <div className="workspace-modal-body">
-          <div className="workspace-row">
-            <span>Background color</span>
-            <button
-              className="workspace-color-button"
-              style={{ "--workspace-bg": workspace.background } as CSSProperties}
-              aria-label="Background color"
-              onClick={() => patchWorkspace({ background: workspace.background === "#f8fbfc" ? "#eaf7fb" : "#f8fbfc" })}
-            />
-          </div>
-          <WorkspaceToggle label="Show shadows" checked={workspace.showShadows} onChange={(showShadows) => patchWorkspace({ showShadows })} />
-          <WorkspaceToggle label="Show grid" checked={workspace.showGrid} onChange={(showGrid) => patchWorkspace({ showGrid })} />
-          <WorkspaceToggle
-            label="Cruise when adding new shapes"
-            checked={workspace.cruiseShapes}
-            onChange={(cruiseShapes) => patchWorkspace({ cruiseShapes })}
-          />
-
-          <label className="workspace-range">
-            <span>Zoom speed</span>
-            <input
-              type="range"
-              min={1}
-              max={10}
-              value={workspace.zoomSpeed}
-              onChange={(event) => patchWorkspace({ zoomSpeed: Number(event.currentTarget.value) })}
-            />
-            <small>
-              <span>Slow</span>
-              <span>Fast</span>
-            </small>
-          </label>
-
-          <WorkspaceSelect
-            label="Units"
-            value={workspace.units}
-            options={["Metric (Default)", "Imperial", "Bricks"]}
-            onChange={(units) => patchWorkspace({ units })}
-          />
-          <WorkspaceSelect
-            label="Scale"
-            value={workspace.scale}
-            options={["1:1 (millimeters)", "1:10 (centimeters)", "1:100 (meters)", "1:1000 (meters)"]}
-            onChange={(scale) => patchWorkspace({ scale })}
-          />
-          <WorkspaceSelect label="Snap Grid" value={snap} options={gridSizes} onChange={(next) => onSnapChange(next as GridSize)} />
-          <WorkspaceSelect
-            label="Workplane size"
-            value={workspace.sizePreset}
-            options={workspaceSizePresets.map((preset) => preset.label)}
-            onChange={setWorkspaceSizePreset}
-          />
-
-          <div className="workspace-dimensions">
-            <label>
-              <span>Width</span>
-              <input
-                type="number"
-                value={workspace.width.toFixed(2)}
-                min={MIN_WORKSPACE_SIZE}
-                max={MAX_WORKSPACE_SIZE}
-                step={1}
-                onChange={(event) => setDimension("width", event.currentTarget.value)}
-              />
-            </label>
-            <label>
-              <span>Length</span>
-              <input
-                type="number"
-                value={workspace.depth.toFixed(2)}
-                min={MIN_WORKSPACE_SIZE}
-                max={MAX_WORKSPACE_SIZE}
-                step={1}
-                onChange={(event) => setDimension("depth", event.currentTarget.value)}
-              />
-            </label>
-          </div>
-          <WorkspaceSelect label="Grid block size" value={workspace.gridBlockPreset} options={gridBlockPresets} onChange={setGridBlockPreset} />
-          {workspace.gridBlockPreset === "Custom" ? (
-            <div className="workspace-dimensions workspace-grid-dimensions">
-              <label>
-                <span>Block size</span>
-                <input
-                  type="number"
-                  value={workspace.gridBlockSize.toFixed(2)}
-                  min={MIN_GRID_BLOCK_SIZE}
-                  max={MAX_GRID_BLOCK_SIZE}
-                  step={0.5}
-                  onChange={(event) => setGridBlockSize(event.currentTarget.value)}
-                />
-              </label>
-            </div>
-          ) : null}
-
-          <button className="make-default-button" onClick={() => onWorkspaceChange(DEFAULT_WORKSPACE)}>
-            Make default
-          </button>
-        </div>
-      </div>
-      <button className="workspace-modal-backdrop" aria-label="Close settings" onClick={onClose} />
-    </div>
-  );
-}
-
-function WorkspaceToggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (checked: boolean) => void }) {
-  return (
-    <label className="workspace-toggle">
-      <span>{label}</span>
-      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.currentTarget.checked)} />
-    </label>
-  );
-}
-
-function WorkspaceSelect({
-  label,
-  value,
-  options,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  options: readonly string[];
-  onChange: (value: string) => void;
-}) {
-  return (
-    <label className="workspace-select">
-      <span>{label}</span>
-      <select value={value} onChange={(event) => onChange(event.currentTarget.value)}>
-        {options.map((option) => (
-          <option key={option} value={option}>
-            {option}
-          </option>
-        ))}
-      </select>
-    </label>
   );
 }
 
@@ -3995,22 +3342,6 @@ function createRotateArc(center: THREE.Vector3, radius: number, start: number, e
   return new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), material);
 }
 
-function shapeWidth(shape: WorkplaneShape) {
-  return shape.width ?? shape.size;
-}
-
-function shapeDepth(shape: WorkplaneShape) {
-  return shape.depth ?? shape.size;
-}
-
-function mirrorSign(value?: boolean) {
-  return value ? -1 : 1;
-}
-
-function mirroredAxisCount(shape: WorkplaneShape) {
-  return [shape.mirrorX, shape.mirrorY, shape.mirrorZ].filter(Boolean).length;
-}
-
 function createShapeObject(shape: WorkplaneShape, showEdges = false, onTextureReady?: () => void) {
   const group = new THREE.Group();
   group.name = shape.name;
@@ -4117,12 +3448,6 @@ function createShapeObject(shape: WorkplaneShape, showEdges = false, onTextureRe
       break;
     case "icosahedron":
       addMesh(group, new THREE.IcosahedronGeometry(size / 2, 1), material, shape);
-      break;
-    case "star":
-      addMesh(group, createExtrudedShapeGeometry(createStarShape(size / 2), height), material, shape);
-      break;
-    case "heart":
-      addMesh(group, createExtrudedShapeGeometry(createHeartShape(size * 0.95), height), material, shape);
       break;
     case "text":
       addTextShape(group, material, shape);
@@ -4526,41 +3851,6 @@ function createHalfSphereGeometry(width: number, height: number, depth: number, 
   geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
   geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
   return geometry;
-}
-
-function createExtrudedShapeGeometry(shape: THREE.Shape, height: number) {
-  const geometry = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false, steps: 1 });
-  geometry.rotateX(-Math.PI / 2);
-  return geometry;
-}
-
-function createStarShape(radius: number) {
-  const shape = new THREE.Shape();
-  const inner = radius * 0.44;
-  for (let i = 0; i < 10; i += 1) {
-    const angle = -Math.PI / 2 + (i * Math.PI) / 5;
-    const r = i % 2 === 0 ? radius : inner;
-    const x = Math.cos(angle) * r;
-    const y = Math.sin(angle) * r;
-    if (i === 0) {
-      shape.moveTo(x, y);
-    } else {
-      shape.lineTo(x, y);
-    }
-  }
-  shape.closePath();
-  return shape;
-}
-
-function createHeartShape(size: number) {
-  const s = size / 24;
-  const shape = new THREE.Shape();
-  shape.moveTo(0, -9 * s);
-  shape.bezierCurveTo(-13 * s, -1 * s, -12 * s, 8 * s, -5 * s, 8 * s);
-  shape.bezierCurveTo(-2 * s, 8 * s, 0, 5 * s, 0, 3 * s);
-  shape.bezierCurveTo(0, 5 * s, 2 * s, 8 * s, 5 * s, 8 * s);
-  shape.bezierCurveTo(12 * s, 8 * s, 13 * s, -1 * s, 0, -9 * s);
-  return shape;
 }
 
 function disposeChildren(group: THREE.Group) {

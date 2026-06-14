@@ -17,7 +17,6 @@
   --nav-text: #31465d;
   --workplane: #9adcf0;
   --workplane-soft: rgba(154, 220, 240, 0.28);
-  --star: #ffd543;
   --shadow: 0 2px 6px rgba(35, 55, 75, 0.12);
   --font-ui: "Avenir Next", Avenir, "Helvetica Neue", Arial, sans-serif;
 }
@@ -1365,40 +1364,6 @@ button {
   color: #62778a;
   font-size: 12px;
   font-weight: 700;
-}
-
-.ai-build-body {
-  width: 430px;
-}
-
-.top-action-panel:has(.ai-build-body) {
-  width: 456px;
-}
-
-.ai-build-body label {
-  display: grid;
-  gap: 6px;
-}
-
-.ai-build-body label span {
-  color: #40586d;
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.ai-build-body textarea {
-  min-height: 104px;
-  resize: vertical;
-  padding: 9px;
-  color: #18364f;
-  background: #f8fbfd;
-  border: 1px solid #d6e2ea;
-  border-radius: 3px;
-  font: 12px/1.45 Consolas, "Courier New", monospace;
-}
-
-.ai-build-body label:first-child textarea {
-  min-height: 154px;
 }
 
 .hidden-file-input {
@@ -3107,15 +3072,6 @@ button {
   font-weight: 900;
   letter-spacing: 0;
   text-shadow: 2px 2px 0 color-mix(in srgb, var(--shape-color), black 35%);
-}
-
-.kind-star,
-.kind-heart {
-  align-self: end;
-  color: var(--shape-color);
-  font-size: calc(var(--shape-size) * 0.78);
-  line-height: 1;
-  text-shadow: 2px 3px 0 color-mix(in srgb, var(--shape-color), black 26%);
 }
 
 .selection-outline {

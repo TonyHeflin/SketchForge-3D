@@ -7,7 +7,11 @@
     "build": "next build apps/web",
     "export": "set STATIC_EXPORT=true&& next build apps/web",
     "start": "next start apps/web",
-    "typecheck": "tsc -p apps/web/tsconfig.json --noEmit"
+    "typecheck": "tsc -p apps/web/tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "perf": "vitest run --config vitest.perf.config.ts --reporter verbose",
+    "ci": "npm run typecheck && npm run test"
   },
   "dependencies": {
     "@tailwindcss/postcss": "^4.1.8",
@@ -27,6 +31,7 @@
     "@types/node": "^22.15.18",
     "@types/react": "^19.1.4",
     "@types/react-dom": "^19.1.5",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.8"
   }
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { Code2, Download, Home, Menu, Settings, UserRoundPlus, X } from "lucide-react";
+import { Download, Home, Menu, Settings, UserRoundPlus, X } from "lucide-react";
 import type manifoldModule from "manifold-3d";
 import type { ManifoldToplevel } from "manifold-3d";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -8,7 +8,6 @@ import { ADDITION, Brush, Evaluator, HOLLOW_SUBTRACTION, SUBTRACTION, type CSGOp
 import * as THREE from "three";
 import { TextGeometry } from "three/examples/jsm/geometries/TextGeometry.js";
 import { FontLoader, type Font, type FontData } from "three/examples/jsm/loaders/FontLoader.js";
-import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
 import { SVGLoader } from "three/examples/jsm/loaders/SVGLoader.js";
 import droidMonoFontJson from "three/examples/fonts/droid/droid_sans_mono_regular.typeface.json";
 import droidSansBoldFontJson from "three/examples/fonts/droid/droid_sans_bold.typeface.json";
@@ -42,16 +41,33 @@ import {
   ToolbarVectorExportIcon,
 } from "./icons";
 import { WorkplaneViewport } from "./WorkplaneViewport";
+import {
+  canonicalizeShape,
+  cleanNearZero,
+  cleanRotationDegrees,
+  fallbackSolidColor,
+  mirroredAxisCount,
+  mirrorSign,
+  normalizeDegrees,
+  serializeShapesForSync,
+  shapeDepth,
+  shapeWidth,
+  workplaneShapesEqual,
+} from "@/lib/workplaneShapes";
+import { createLocalId } from "@/lib/localIds";
+import { makeShapeFromAsset, sceneShape, toolbarShapeAssets, type ToolbarShapeAsset } from "@/lib/shapeCatalog";
+import { importedShapeFromStl } from "@/lib/stlImport";
 import type { AlignAxis, AlignHandleStatus, AlignTarget, GridSize, ShapeAsset, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
-type TopPanel = "import" | "export" | "builder" | "tips" | "profile" | "settings" | null;
+export { importedShapeFromStl };
+
+type TopPanel = "import" | "export" | "tips" | "profile" | "settings" | null;
 type ExportFormat = "stl" | "obj";
 type Vec3 = [number, number, number];
 type MeshData = { name: string; vertices: Vec3[]; faces: [number, number, number][] };
 type Cuboid = { minX: number; maxX: number; minY: number; maxY: number; minZ: number; maxZ: number };
 type ShapeUpdatePatch = Partial<WorkplaneShape> & { bakeTransform?: boolean };
 type ManifoldSolid = ReturnType<ManifoldToplevel["Manifold"]["cube"]>;
-type ToolbarShapeAsset = ShapeAsset & { menuIcon: string };
 type DownloadResult = { mode: "browser" } | { mode: "folder"; path: string };
 type GroupBuildResult = {
   group: WorkplaneShape | null;
@@ -76,36 +92,13 @@ type BooleanAutomationResult = {
   groupId?: string;
   error?: string;
 };
-type AiCommandPayload = {
-  shape?: Partial<WorkplaneShape>;
-  shapes?: Partial<WorkplaneShape>[];
-  id?: string;
-  ids?: string[];
-  patch?: Partial<WorkplaneShape>;
-  replace?: boolean;
-  count?: number;
-};
-
 const DOWNLOAD_MODE_STORAGE_KEY = "sketchForge.downloadMode";
 const DOWNLOAD_FOLDER_STORAGE_KEY = "sketchForge.downloadFolder";
 const SHARED_CLIPBOARD_STORAGE_KEY = "sketchForge.clipboard";
-type SketchForgeAiBridge = {
-  getState: () => { shapes: WorkplaneShape[]; selectedIds: string[]; notice: string };
-  setShapes: (nextShapes: Partial<WorkplaneShape>[], nextSelection?: string[] | string | null) => WorkplaneShape[];
-  addShape: (shape: Partial<WorkplaneShape>) => WorkplaneShape;
-  updateShape: (id: string, patch: Partial<WorkplaneShape>) => WorkplaneShape | null;
-  deleteShape: (id: string) => boolean;
-  select: (ids: string[] | string | null) => string[];
-  clear: () => void;
-  createHouse: (options?: { replace?: boolean }) => WorkplaneShape[];
-  createPerfScene: (count?: number) => WorkplaneShape[];
-  run: (command: string, payload?: AiCommandPayload) => unknown;
-};
+const STATIC_EXPORT_BUILD = process.env.NEXT_PUBLIC_STATIC_EXPORT === "true";
 
 declare global {
   interface Window {
-    sketchforgeAI?: SketchForgeAiBridge;
-    sketchforgeBridge?: SketchForgeAiBridge;
     __sketchforgeBooleanTest?: BooleanAutomationResult;
     __sketchforgeBooleanTestImage?: string;
   }
@@ -117,7 +110,6 @@ const CUTTER_RESIDUAL_INSET = CUTTER_PADDING * 0.4;
 const MIN_SHAPE_DIMENSION = 0.01;
 const IMPORTED_EXACT_BOOLEAN_TRIANGLE_LIMIT = 150000;
 const COPLANAR_BOOLEAN_RESCUE_DEGREES = 0.02;
-const stlLoader = new STLLoader();
 const svgLoader = new SVGLoader();
 const booleanFontLoader = new FontLoader();
 const booleanTextFonts: Record<string, Font> = {
@@ -130,87 +122,6 @@ const booleanTextFonts: Record<string, Font> = {
   Stencil: booleanFontLoader.parse(helvetikerBoldFontJson as FontData),
 };
 let manifoldRuntimePromise: Promise<ManifoldToplevel> | null = null;
-
-function normalizeDegrees(value: number) {
-  return ((value % 360) + 360) % 360;
-}
-
-function cleanRotationDegrees(value: number, precision = 1) {
-  if (!Number.isFinite(value)) {
-    return 0;
-  }
-  const normalized = normalizeDegrees(value);
-  const rounded = Number(normalized.toFixed(precision));
-  const zeroThreshold = precision <= 1 ? 0.5 : 0.05;
-  if (rounded < zeroThreshold || rounded >= 360 - zeroThreshold || Object.is(rounded, -0)) {
-    return 0;
-  }
-  return rounded;
-}
-
-function cleanNearZero(value: number, epsilon = 0.005) {
-  return Math.abs(value) < epsilon ? 0 : value;
-}
-
-function canonicalizeShape(shape: WorkplaneShape): WorkplaneShape {
-  const next: WorkplaneShape = {
-    ...shape,
-    rotation: cleanRotationDegrees(shape.rotation ?? 0),
-    rotationX: cleanRotationDegrees(shape.rotationX ?? 0),
-    rotationZ: cleanRotationDegrees(shape.rotationZ ?? 0),
-    mirrorX: shape.mirrorX || undefined,
-    mirrorY: shape.mirrorY || undefined,
-    mirrorZ: shape.mirrorZ || undefined,
-  };
-  if (shape.groupedShapes) {
-    next.groupedShapes = shape.groupedShapes.map(canonicalizeShape);
-  }
-  return next;
-}
-
-function workplaneShapesEqual(a: WorkplaneShape, b: WorkplaneShape) {
-  return (
-    a.id === b.id &&
-    a.name === b.name &&
-    a.kind === b.kind &&
-    a.color === b.color &&
-    a.hole === b.hole &&
-    a.x === b.x &&
-    a.z === b.z &&
-    a.elevation === b.elevation &&
-    a.size === b.size &&
-    a.width === b.width &&
-    a.depth === b.depth &&
-    a.height === b.height &&
-    a.rotation === b.rotation &&
-    a.rotationX === b.rotationX &&
-    a.rotationZ === b.rotationZ &&
-    a.mirrorX === b.mirrorX &&
-    a.mirrorY === b.mirrorY &&
-    a.mirrorZ === b.mirrorZ &&
-    a.radius === b.radius &&
-    a.steps === b.steps &&
-    a.sides === b.sides &&
-    a.bevel === b.bevel &&
-    a.segments === b.segments &&
-    a.topRadius === b.topRadius &&
-    a.baseRadius === b.baseRadius &&
-    a.text === b.text &&
-    a.font === b.font &&
-    a.importedMesh === b.importedMesh &&
-    a.imagePlate === b.imagePlate &&
-    a.groupedShapes === b.groupedShapes &&
-    a.groupedBaseWidth === b.groupedBaseWidth &&
-    a.groupedBaseDepth === b.groupedBaseDepth &&
-    a.groupedBaseHeight === b.groupedBaseHeight &&
-    a.locked === b.locked &&
-    a.hidden === b.hidden
-  );
-}
-
-function serializeShapesForSync(shapes: WorkplaneShape[]) {
-  return JSON.stringify(shapes.map(canonicalizeShape));
-}
 
 function readSharedClipboard() {
   if (typeof window === "undefined") {
@@ -261,7 +172,7 @@ async function importBundledManifoldModule() {
 function getManifoldRuntime() {
   const assetBase = typeof window === "undefined" ? "/" : new URL(".", window.location.href).href;
   const isFileBuild = typeof window !== "undefined" && window.location.protocol === "file:";
-  const manifoldScriptUrl = isFileBuild ? new URL("manifold.js", assetBase).href : "/manifold.js";
+  const manifoldScriptUrl = new URL("manifold.js", assetBase).href;
   const runtimeModule = isFileBuild
     ? importBundledManifoldModule().then((module) => module.default)
     : import(/* webpackIgnore: true */ manifoldScriptUrl).then((module) => (module as { default: typeof manifoldModule }).default);
@@ -273,7 +184,7 @@ function getManifoldRuntime() {
         });
       }
       return module({
-        locateFile: ((file: string) => (file.endsWith(".wasm") ? "/manifold.wasm" : file)) as () => string,
+        locateFile: ((file: string) => (file.endsWith(".wasm") ? new URL("manifold.wasm", assetBase).href : new URL(file, assetBase).href)) as () => string,
       });
     })
     .then((runtime) => {
@@ -282,98 +193,6 @@ function getManifoldRuntime() {
     });
   return manifoldRuntimePromise;
 }
-const toolbarShapeAssets: ToolbarShapeAsset[] = [
-  { id: "box", name: "Box", src: "assets/sketchforge/shape-icons-gray/box.png", menuIcon: "assets/sketchforge/shape-icons-gray/box.png", kind: "box", color: "#d41721" },
-  { id: "cylinder", name: "Cylinder", src: "assets/sketchforge/shape-icons-gray/cylinder.png", menuIcon: "assets/sketchforge/shape-icons-gray/cylinder.png", kind: "cylinder", color: "#d97813" },
-  { id: "sphere", name: "Sphere", src: "assets/sketchforge/shape-icons-gray/sphere.png", menuIcon: "assets/sketchforge/shape-icons-gray/sphere.png", kind: "sphere", color: "#0098c7" },
-  { id: "cone", name: "Cone", src: "assets/sketchforge/shape-icons-gray/cone.png", menuIcon: "assets/sketchforge/shape-icons-gray/cone.png", kind: "cone", color: "#6e2786" },
-  { id: "pyramid", name: "Pyramid", src: "assets/sketchforge/shape-icons-gray/pyramid.png", menuIcon: "assets/sketchforge/shape-icons-gray/pyramid.png", kind: "pyramid", color: "#f2cf10" },
-  { id: "wedge", name: "Wedge", src: "assets/sketchforge/shape-icons-gray/wedge.png", menuIcon: "assets/sketchforge/shape-icons-gray/wedge.png", kind: "wedge", color: "#33983d" },
-  { id: "text", name: "Text", src: "assets/sketchforge/shape-icons-gray/text.png", menuIcon: "assets/sketchforge/shape-icons-gray/text.png", kind: "text", color: "#cf101b" },
-  { id: "round-roof", name: "Round Roof", src: "assets/sketchforge/shape-icons-gray/round-roof.png", menuIcon: "assets/sketchforge/shape-icons-gray/round-roof.png", kind: "roundRoof", color: "#67c4ce" },
-  { id: "half-sphere", name: "Half Sphere", src: "assets/sketchforge/shape-icons-gray/half-sphere.png", menuIcon: "assets/sketchforge/shape-icons-gray/half-sphere.png", kind: "halfSphere", color: "#c9009a" },
-  { id: "torus", name: "Torus", src: "assets/sketchforge/shape-icons-gray/torus.png", menuIcon: "assets/sketchforge/shape-icons-gray/torus.png", kind: "torus", color: "#0098c7" },
-  { id: "tube", name: "Tube", src: "assets/sketchforge/shape-icons-gray/tube.png", menuIcon: "assets/sketchforge/shape-icons-gray/tube.png", kind: "tube", color: "#ce7013" },
-];
-
-function makeShapeFromAsset(asset: ShapeAsset, point?: { x: number; z: number; elevation?: number }): WorkplaneShape {
-  const roundProfile = asset.kind === "sphere" || asset.kind === "torus" || asset.kind === "ring" || asset.kind === "halfSphere";
-  const flatProfile = asset.kind === "torus" || asset.kind === "ring" || asset.kind === "star" || asset.kind === "heart" || asset.kind === "text";
-  const size = roundProfile ? 22 : 20;
-  const height = asset.kind === "text" ? 10 : asset.kind === "roundRoof" ? 10 : asset.kind === "halfSphere" ? 11 : flatProfile ? 5 : 20;
-  const width = asset.kind === "text" ? 86 : size;
-  const depth = asset.kind === "text" ? 28 : size;
-
-  return {
-    id: `${asset.id}-${crypto.randomUUID()}`,
-    name: asset.name,
-    kind: asset.kind,
-    color: asset.color,
-    hole: asset.hole,
-    x: point?.x ?? 0,
-    z: point?.z ?? 0,
-    elevation: point?.elevation ?? 0,
-    size,
-    width,
-    depth,
-    height,
-    rotation: 0,
-    rotationX: 0,
-    rotationZ: 0,
-    radius: asset.kind === "box" ? 0 : undefined,
-    steps: asset.kind === "box" ? 10 : asset.kind === "sphere" ? 24 : asset.kind === "halfSphere" ? 32 : undefined,
-    sides: asset.kind === "cylinder" || asset.kind === "cone" ? 96 : asset.kind === "roundRoof" ? 64 : asset.kind === "pyramid" ? 4 : undefined,
-    bevel: asset.kind === "cylinder" ? 0 : asset.kind === "tube" || asset.kind === "ring" ? 4 : undefined,
-    segments: asset.kind === "cylinder" ? 1 : undefined,
-    topRadius: asset.kind === "cone" ? 0 : undefined,
-    baseRadius: asset.kind === "cone" ? size / 2 : undefined,
-    text: asset.kind === "text" ? "TEXT" : undefined,
-    font: asset.kind === "text" ? "Multilanguage" : undefined,
-    locked: false,
-    hidden: false,
-  };
-}
-
-function sceneShape(shape: Partial<WorkplaneShape> & Pick<WorkplaneShape, "name" | "kind" | "color">): WorkplaneShape {
-  const width = shape.width ?? shape.size ?? 20;
-  const depth = shape.depth ?? shape.size ?? 20;
-  const height = shape.height ?? 20;
-  return canonicalizeShape({
-    id: shape.id ?? `ai-shape-${crypto.randomUUID()}`,
-    name: shape.name,
-    kind: shape.kind,
-    color: shape.color,
-    hole: shape.hole,
-    x: shape.x ?? 0,
-    z: shape.z ?? 0,
-    elevation: shape.elevation ?? 0,
-    size: shape.size ?? Math.max(width, depth),
-    width,
-    depth,
-    height,
-    rotation: shape.rotation ?? 0,
-    rotationX: shape.rotationX ?? 0,
-    rotationZ: shape.rotationZ ?? 0,
-    radius: shape.radius,
-    steps: shape.steps,
-    sides: shape.sides,
-    bevel: shape.bevel,
-    segments: shape.segments,
-    topRadius: shape.topRadius,
-    baseRadius: shape.baseRadius,
-    text: shape.text,
-    font: shape.font,
-    importedMesh: shape.importedMesh,
-    imagePlate: shape.imagePlate,
-    groupedShapes: shape.groupedShapes,
-    groupedBaseWidth: shape.groupedBaseWidth,
-    groupedBaseDepth: shape.groupedBaseDepth,
-    groupedBaseHeight: shape.groupedBaseHeight,
-    locked: shape.locked ?? false,
-    hidden: shape.hidden ?? false,
-  });
-}
-
 function stlBoxTrianglePositions(width: number, depth: number, height: number) {
   const x = width / 2;
   const z = depth / 2;
@@ -847,72 +666,6 @@ function makeBlockPerfScene(count = 500): WorkplaneShape[] {
   });
 }
 
-const AI_BUILD_PROMPT = `Create a SketchForge 3D build as JSON only.
-Return this exact shape:
-{"shapes":[{"name":"Part name","kind":"box","color":"#d41721","x":0,"z":0,"elevation":0,"width":20,"depth":20,"height":20,"rotation":0}]}
-Allowed kind values: box, cylinder, sphere, cone, pyramid, roof, roundRoof, halfSphere, torus, tube, ring, wedge, polygon, icosahedron, star, heart, text.
-Use millimeters. Use x and z for the workplane position. Use elevation for height above the workplane. Return valid JSON with no markdown.`;
-
-function extractJsonBuild(source: string): Partial<WorkplaneShape>[] {
-  const trimmed = source.trim();
-  if (!trimmed) {
-    throw new Error("Paste build code first");
-  }
-
-  const candidates = [trimmed];
-  const fenced = trimmed.match(/```(?:json|js|javascript)?\s*([\s\S]*?)```/i);
-  if (fenced?.[1]) {
-    candidates.unshift(fenced[1].trim());
-  }
-
-  const buildCall = trimmed.match(/(?:build|createBuild|setShapes)\s*\(\s*(\[[\s\S]*\]|\{[\s\S]*\})\s*\)\s*;?/);
-  if (buildCall?.[1]) {
-    candidates.unshift(buildCall[1].trim());
-  }
-
-  const firstObject = trimmed.match(/\{[\s\S]*\}/);
-  if (firstObject?.[0]) {
-    candidates.push(firstObject[0]);
-  }
-
-  const firstArray = trimmed.match(/\[[\s\S]*\]/);
-  if (firstArray?.[0]) {
-    candidates.push(firstArray[0]);
-  }
-
-  for (const candidate of candidates) {
-    try {
-      const parsed = JSON.parse(candidate) as unknown;
-      if (Array.isArray(parsed)) {
-        return parsed as Partial<WorkplaneShape>[];
-      }
-      if (parsed && typeof parsed === "object" && Array.isArray((parsed as { shapes?: unknown }).shapes)) {
-        return (parsed as { shapes: Partial<WorkplaneShape>[] }).shapes;
-      }
-    } catch {
-      // Try the next candidate.
-    }
-  }
-
-  throw new Error("Could not read the build code. Use JSON with a shapes array.");
-}
-
-function shapeWidth(shape: WorkplaneShape) {
-  return shape.width ?? shape.size;
-}
-
-function shapeDepth(shape: WorkplaneShape) {
-  return shape.depth ?? shape.size;
-}
-
-function fallbackSolidColor(shape: WorkplaneShape) {
-  if (shape.kind === "cylinder") return "#d97813";
-  if (shape.kind === "sphere") return "#0098c7";
-  if (shape.kind === "cone") return "#6e2786";
-  if (shape.kind === "pyramid") return "#f2cf10";
-  return "#d41721";
-}
-
 function withHoleMode(shape: WorkplaneShape, hole: boolean, parentColor?: string): WorkplaneShape {
   const color = hole ? "#b8c2cc" : (parentColor ?? fallbackSolidColor(shape));
   return {
@@ -925,14 +678,6 @@ function withHoleMode(shape: WorkplaneShape, hole: boolean, parentColor?: string
 
 function sanitizeName(name: string) {
   return name.replace(/[^a-z0-9_-]+/gi, "_") || "shape";
-}
-
-function mirrorSign(value?: boolean) {
-  return value ? -1 : 1;
-}
-
-function mirroredAxisCount(shape: WorkplaneShape) {
-  return [shape.mirrorX, shape.mirrorY, shape.mirrorZ].filter(Boolean).length;
 }
 
 function transformMesh(mesh: MeshData, shape: WorkplaneShape): MeshData {
@@ -1516,75 +1261,6 @@ function bakeShapeTransformIntoMesh(shape: WorkplaneShape): WorkplaneShape {
   };
 }
 
-export function importedShapeFromStl(fileName: string, buffer: ArrayBuffer): WorkplaneShape {
-  const rawGeometry = stlLoader.parse(buffer);
-  const geometry = rawGeometry.index ? rawGeometry.toNonIndexed() : rawGeometry.clone();
-  geometry.computeBoundingBox();
-
-  const box = geometry.boundingBox;
-  if (!box) {
-    throw new Error("STL has no readable geometry");
-  }
-
-  const size = new THREE.Vector3();
-  const center = new THREE.Vector3();
-  box.getSize(size);
-  box.getCenter(center);
-
-  const maxDimension = Math.max(size.x, size.y, size.z);
-  if (!Number.isFinite(maxDimension) || maxDimension <= 0) {
-    throw new Error("STL geometry is empty");
-  }
-
-  const scale = 1;
-  const position = geometry.getAttribute("position");
-  const normal = geometry.getAttribute("normal");
-  const positions: number[] = [];
-  const normals: number[] = [];
-
-  for (let i = 0; i < position.count; i += 1) {
-    positions.push(
-      (position.getX(i) - center.x) * scale,
-      (position.getY(i) - box.min.y) * scale,
-      (position.getZ(i) - center.z) * scale,
-    );
-    if (normal) {
-      normals.push(normal.getX(i), normal.getY(i), normal.getZ(i));
-    }
-  }
-
-  const width = Math.max(1, size.x * scale);
-  const height = Math.max(1, size.y * scale);
-  const depth = Math.max(1, size.z * scale);
-
-  return {
-    id: `uploaded-mesh-${crypto.randomUUID()}`,
-    name: fileName.replace(/\.[^.]+$/, "") || "Imported STL",
-    kind: "mesh",
-    color: "#0098c7",
-    x: 10,
-    z: -10,
-    size: Math.max(width, depth),
-    width,
-    depth,
-    height,
-    rotation: 0,
-    rotationX: 0,
-    rotationZ: 0,
-    importedMesh: {
-      positions,
-      normals: normals.length ? normals : undefined,
-      baseWidth: width,
-      baseDepth: depth,
-      baseHeight: height,
-      triangleCount: Math.floor(position.count / 3),
-      sourceFormat: "stl",
-    },
-    locked: false,
-    hidden: false,
-  };
-}
-
 function importedShapeFromSvg(fileName: string, source: string): WorkplaneShape {
   const parsed = svgLoader.parse(source);
   const rawPositions: number[] = [];
@@ -1638,7 +1314,7 @@ function importedShapeFromSvg(fileName: string, source: string): WorkplaneShape 
   }
 
   return {
-    id: `uploaded-svg-${crypto.randomUUID()}`,
+    id: createLocalId("uploaded-svg"),
     name: fileName.replace(/\.[^.]+$/, "") || "Imported SVG",
     kind: "mesh",
     color: "#0098c7",
@@ -1759,7 +1435,7 @@ async function importedShapeFromImage(file: File): Promise<WorkplaneShape> {
   const imagePlate = await prepareImportedImage(file);
   const dimensions = imagePlateDimensions(imagePlate.pixelWidth, imagePlate.pixelHeight);
   return {
-    id: `uploaded-image-${crypto.randomUUID()}`,
+    id: createLocalId("uploaded-image"),
     name: file.name.replace(/\.[^.]+$/, "") || "Imported Image",
     kind: "box",
     color: "#f4f7f9",
@@ -1844,7 +1520,7 @@ function triggerBrowserDownload(filename: string, content: string, type: string)
 async function downloadTextFile(filename: string, content: string, type: string): Promise<DownloadResult> {
   const mode = window.localStorage.getItem(DOWNLOAD_MODE_STORAGE_KEY);
   const folder = window.localStorage.getItem(DOWNLOAD_FOLDER_STORAGE_KEY)?.trim() ?? "";
-  if (mode === "folder" && folder) {
+  if (!STATIC_EXPORT_BUILD && mode === "folder" && folder) {
     const response = await fetch("/api/local-download", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2930,7 +2606,7 @@ function booleanMeshShape(selection: WorkplaneShape[]): WorkplaneShape | null {
     }
 
     return {
-      id: `grouped-boolean-${crypto.randomUUID()}`,
+      id: createLocalId("grouped-boolean"),
       name: "Group",
       kind: "mesh",
       color: firstSolid.color,
@@ -2989,7 +2665,7 @@ function resultGeometryToMeshShape(
   const firstSolid = solids[0];
 
   return {
-    id: `${idPrefix}-${crypto.randomUUID()}`,
+    id: createLocalId(idPrefix),
     name: "Group",
     kind: "mesh",
     color: firstSolid.color,
@@ -3069,7 +2745,7 @@ function coplanarRescueCutterShape(shape: WorkplaneShape): WorkplaneShape {
 function cloneAsGroupChild(shape: WorkplaneShape, centerX: number, centerZ: number, minY: number): WorkplaneShape {
   return {
     ...shape,
-    id: `${shape.id}-group-child-${crypto.randomUUID()}`,
+    id: createLocalId(`${shape.id}-group-child`),
     x: shape.x - centerX,
     z: shape.z - centerZ,
     elevation: (shape.elevation ?? 0) - minY,
@@ -3316,7 +2992,7 @@ function meshPositionsToGroupShape(selection: WorkplaneShape[], solids: Workplan
 
   const firstSolid = solids[0];
   return {
-    id: `${idPrefix}-${crypto.randomUUID()}`,
+    id: createLocalId(idPrefix),
     name: "Group",
     kind: "mesh",
     color: firstSolid.color,
@@ -3576,7 +3252,7 @@ function boxedBooleanMeshShape(selection: WorkplaneShape[]): WorkplaneShape | nu
   const firstSolid = solids[0];
 
   return {
-    id: `grouped-boolean-${crypto.randomUUID()}`,
+    id: createLocalId("grouped-boolean"),
     name: "Group",
     kind: "mesh",
     color: firstSolid.color,
@@ -3631,7 +3307,7 @@ function aabbBooleanMeshShape(selection: WorkplaneShape[]): WorkplaneShape | nul
   const firstSolid = solids[0];
 
   return {
-    id: `grouped-boolean-${crypto.randomUUID()}`,
+    id: createLocalId("grouped-boolean"),
     name: "Group",
     kind: "mesh",
     color: firstSolid.color,
@@ -3754,7 +3430,7 @@ function hollowClipMeshShape(selection: WorkplaneShape[]): WorkplaneShape | null
 
   const firstSolid = solids[0];
   return {
-    id: `grouped-import-clip-${crypto.randomUUID()}`,
+    id: createLocalId("grouped-import-clip"),
     name: "Group",
     kind: "mesh",
     color: firstSolid.color,
@@ -3860,7 +3536,7 @@ function mergedMeshShape(selection: WorkplaneShape[]): WorkplaneShape | null {
   const holeOnly = groupable.every((shape) => shape.hole);
 
   return {
-    id: `grouped-mesh-${crypto.randomUUID()}`,
+    id: createLocalId("grouped-mesh"),
     name: "Group",
     kind: "mesh",
     color: holeOnly ? "#b8c2cc" : firstSolid.color,
@@ -3912,7 +3588,7 @@ function groupedShape(selection: WorkplaneShape[]): WorkplaneShape | null {
   const holeOnly = groupable.every((shape) => shape.hole);
 
   return {
-    id: `group-${crypto.randomUUID()}`,
+    id: createLocalId("group"),
     name: "Group",
     kind: "mesh",
     color: firstSolid.color,
@@ -4008,7 +3684,7 @@ function restoreGroupedChildren(group: WorkplaneShape): WorkplaneShape[] {
     const childRotation = rotationFromQuaternion(new THREE.Quaternion().setFromRotationMatrix(childRotationMatrix));
     const restored: WorkplaneShape = {
       ...child,
-      id: `${child.id}-ungroup-${crypto.randomUUID()}`,
+      id: createLocalId(`${child.id}-ungroup`),
       x: worldCenter.x,
       z: worldCenter.z,
       elevation: worldCenter.y - height / 2,
@@ -4187,6 +3863,11 @@ export function SketchForgeEditor({
   const lastProjectShapesEchoRef = useRef<string | null>(null);
   const lastProjectIdRef = useRef<string | null>(null);
   const projectSnapshotRunRef = useRef(0);
+  const shapesRef = useRef(shapes);
+  const historyIndexRef = useRef(historyIndex);
+  const interactionHistoryStartRef = useRef("");
+  const interactionHistoryChangedRef = useRef(false);
+  const interactionHistoryTimerRef = useRef<number | null>(null);
   const [projectInteractionActive, setProjectInteractionActive] = useState(false);
 
   useEffect(() => {
@@ -4218,6 +3899,14 @@ export function SketchForgeEditor({
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   }, []);
+
+  useEffect(() => {
+    shapesRef.current = shapes;
+  }, [shapes]);
+
+  useEffect(() => {
+    historyIndexRef.current = historyIndex;
+  }, [historyIndex]);
 
   const selectedShapes = useMemo(() => shapes.filter((shape) => selectedIds.includes(shape.id)), [selectedIds, shapes]);
   const selectedShape = selectedShapes.at(-1) ?? null;
@@ -4324,6 +4013,38 @@ export function SketchForgeEditor({
     [onProjectShapesChange, projectId],
   );
 
+  const finalizeInteractionHistory = useCallback(() => {
+    const startFingerprint = interactionHistoryStartRef.current;
+    const hadChanges = interactionHistoryChangedRef.current;
+    interactionHistoryStartRef.current = "";
+    interactionHistoryChangedRef.current = false;
+    if (!hadChanges) {
+      return;
+    }
+
+    const canonicalNext = shapesRef.current.map(canonicalizeShape);
+    const nextFingerprint = projectShapesFingerprint(canonicalNext);
+    if (!startFingerprint || startFingerprint === nextFingerprint) {
+      return;
+    }
+
+    setHistory((current) => {
+      const historyIndex = Math.min(historyIndexRef.current, Math.max(0, current.length - 1));
+      const trimmed = current.slice(0, historyIndex + 1);
+      const latestHistory = trimmed.at(-1) ?? [];
+      if (projectShapesFingerprint(latestHistory) === nextFingerprint) {
+        historyIndexRef.current = Math.max(0, trimmed.length - 1);
+        setHistoryIndex(historyIndexRef.current);
+        return trimmed;
+      }
+
+      const nextHistory = [...trimmed, canonicalNext];
+      historyIndexRef.current = nextHistory.length - 1;
+      setHistoryIndex(historyIndexRef.current);
+      return nextHistory;
+    });
+  }, []);
+
   useEffect(() => {
     if (projectInteractionActive || !pendingProjectShapesRef.current) {
       return;
@@ -4334,10 +4055,34 @@ export function SketchForgeEditor({
     return () => window.clearTimeout(timer);
   }, [projectInteractionActive, syncProjectShapes]);
 
-  const updateProjectInteractionActive = useCallback((active: boolean) => {
-    projectInteractionActiveRef.current = active;
-    setProjectInteractionActive((current) => (current === active ? current : active));
-  }, []);
+  const updateProjectInteractionActive = useCallback(
+    (active: boolean) => {
+      if (active) {
+        if (interactionHistoryTimerRef.current !== null) {
+          window.clearTimeout(interactionHistoryTimerRef.current);
+          interactionHistoryTimerRef.current = null;
+        }
+        if (!projectInteractionActiveRef.current) {
+          interactionHistoryStartRef.current = projectShapesFingerprint(shapesRef.current);
+          interactionHistoryChangedRef.current = false;
+        }
+        projectInteractionActiveRef.current = true;
+        setProjectInteractionActive((current) => (current ? current : true));
+        return;
+      }
+
+      projectInteractionActiveRef.current = false;
+      setProjectInteractionActive((current) => (current ? false : current));
+      if (interactionHistoryTimerRef.current !== null) {
+        window.clearTimeout(interactionHistoryTimerRef.current);
+      }
+      interactionHistoryTimerRef.current = window.setTimeout(() => {
+        interactionHistoryTimerRef.current = null;
+        finalizeInteractionHistory();
+      }, 0);
+    },
+    [finalizeInteractionHistory],
+  );
 
   const updateProjectWorkspaceSettings = useCallback(
     (settings: { workspace: WorkplaneWorkspaceSettings; snap: GridSize }) => {
@@ -4354,11 +4099,13 @@ export function SketchForgeEditor({
       const canonicalNext = next.map(canonicalizeShape);
       const requestedSelection = Array.isArray(nextSelection) ? nextSelection : nextSelection ? [nextSelection] : [];
       const validSelection = requestedSelection.filter((id, index) => requestedSelection.indexOf(id) === index && canonicalNext.some((shape) => shape.id === id));
+      shapesRef.current = canonicalNext;
       setShapes(canonicalNext);
       setSelectedIds(validSelection);
       setHistory((current) => {
         const trimmed = current.slice(0, historyIndex + 1);
-        setHistoryIndex(trimmed.length);
+        historyIndexRef.current = trimmed.length;
+        setHistoryIndex(historyIndexRef.current);
         return [...trimmed, canonicalNext];
       });
       if (message) {
@@ -4423,6 +4170,9 @@ export function SketchForgeEditor({
       if (projectSyncTimerRef.current !== null) {
         window.clearTimeout(projectSyncTimerRef.current);
       }
+      if (interactionHistoryTimerRef.current !== null) {
+        window.clearTimeout(interactionHistoryTimerRef.current);
+      }
     };
   }, []);
 
@@ -4434,28 +4184,49 @@ export function SketchForgeEditor({
     [commitShapes, placementElevation, shapes],
   );
 
-  const updateShape = useCallback((id: string, patch: ShapeUpdatePatch) => {
-    const bakeTransform = Boolean(patch.bakeTransform);
-    const cleanedPatch = cleanShapePatch(patch);
-    setShapes((current) => {
-      let changed = false;
-      const next = current.map((shape) => {
-        if (shape.id !== id) {
-          return shape;
-        }
+  const updateShape = useCallback(
+    (id: string, patch: ShapeUpdatePatch) => {
+      const bakeTransform = Boolean(patch.bakeTransform);
+      const cleanedPatch = cleanShapePatch(patch);
+      const applyPatch = (current: WorkplaneShape[]) => {
+        let changed = false;
+        const next = current.map((shape) => {
+          if (shape.id !== id) {
+            return shape;
+          }
 
-        const patched = { ...shape, ...cleanedPatch };
-        const canonicalBase = canonicalizeShape("hole" in cleanedPatch ? withHoleMode(patched, Boolean(cleanedPatch.hole), cleanedPatch.color) : patched);
-        const canonical = bakeTransform ? canonicalizeShape(bakeShapeTransformIntoMesh(canonicalBase)) : canonicalBase;
-        if (workplaneShapesEqual(shape, canonical)) {
-          return shape;
-        }
-        changed = true;
-        return canonical;
-      });
-      return changed ? next : current;
-    });
-  }, []);
+          const patched = { ...shape, ...cleanedPatch };
+          const canonicalBase = canonicalizeShape("hole" in cleanedPatch ? withHoleMode(patched, Boolean(cleanedPatch.hole), cleanedPatch.color) : patched);
+          const canonical = bakeTransform ? canonicalizeShape(bakeShapeTransformIntoMesh(canonicalBase)) : canonicalBase;
+          if (workplaneShapesEqual(shape, canonical)) {
+            return shape;
+          }
+          changed = true;
+          return canonical;
+        });
+        return { changed, next };
+      };
+
+      if (projectInteractionActiveRef.current) {
+        setShapes((current) => {
+          const { changed, next } = applyPatch(current);
+          if (!changed) {
+            return current;
+          }
+          interactionHistoryChangedRef.current = true;
+          shapesRef.current = next;
+          return next;
+        });
+        return;
+      }
+
+      const { changed, next } = applyPatch(shapes);
+      if (changed) {
+        commitShapes(next, selectedIds);
+      }
+    },
+    [commitShapes, selectedIds, shapes],
+  );
 
   const deleteSelected = useCallback(() => {
     if (!hasSelection) {
@@ -4477,7 +4248,7 @@ export function SketchForgeEditor({
     }
     const duplicates = selectedShapes.map((shape) => ({
       ...shape,
-      id: `${shape.id}-copy-${crypto.randomUUID()}`,
+      id: createLocalId(`${shape.id}-copy`),
       x: Math.min(110, shape.x + 8),
       z: Math.min(110, shape.z + 8),
     }));
@@ -4506,7 +4277,7 @@ export function SketchForgeEditor({
     }
     const pasted = sourceClipboard.map((shape) => ({
       ...shape,
-      id: `${shape.id}-paste-${crypto.randomUUID()}`,
+      id: createLocalId(`${shape.id}-paste`),
       x: Math.min(110, shape.x + 12),
       z: Math.min(110, shape.z + 12),
     }));
@@ -5040,32 +4811,6 @@ export function SketchForgeEditor({
     [commitShapes],
   );
 
-  const buildFromCode = useCallback(
-    (source: string) => {
-      try {
-        const parsedShapes = extractJsonBuild(source);
-        const generated = parsedShapes.map((shape, index) =>
-          sceneShape({
-            name: shape.name ?? `AI part ${index + 1}`,
-            kind: shape.kind ?? "box",
-            color: shape.color ?? "#d41721",
-            ...shape,
-            id: shape.id ?? `ai-build-${crypto.randomUUID()}`,
-          }),
-        );
-        if (generated.length === 0) {
-          setNotice("Build code had no shapes");
-          return;
-        }
-        commitShapes([...shapes, ...generated], generated.map((shape) => shape.id), `Built ${generated.length} AI shape${generated.length === 1 ? "" : "s"}`);
-        setTopPanel(null);
-      } catch (error) {
-        setNotice(error instanceof Error ? error.message : "Could not build from code");
-      }
-    },
-    [commitShapes, shapes],
-  );
-
   const saveDesign = useCallback(() => {
     setNotice(`Saved design with ${shapes.length} shape${shapes.length === 1 ? "" : "s"}`);
     setMenuOpen(false);
@@ -5079,7 +4824,7 @@ export function SketchForgeEditor({
     }
     const copies = shapes.map((shape) => ({
       ...shape,
-      id: `${shape.id}-copy-${crypto.randomUUID()}`,
+      id: createLocalId(`${shape.id}-copy`),
       x: Math.min(110, shape.x + 12),
       z: Math.min(110, shape.z + 12),
     }));
@@ -5128,101 +4873,6 @@ export function SketchForgeEditor({
       return [id];
     });
   }, []);
-
-  useEffect(() => {
-    const normalizeShape = (shape: Partial<WorkplaneShape>) =>
-      sceneShape({
-        name: shape.name ?? "AI shape",
-        kind: shape.kind ?? "box",
-        color: shape.color ?? "#d41721",
-        ...shape,
-        id: shape.id ?? `ai-${crypto.randomUUID()}`,
-      });
-
-    const api: SketchForgeAiBridge = {
-      getState: () => ({ shapes, selectedIds, notice }),
-      setShapes: (nextShapes, nextSelection = null) => {
-        const normalized = nextShapes.map(normalizeShape);
-        commitShapes(normalized, nextSelection, `AI set ${normalized.length} shape${normalized.length === 1 ? "" : "s"}`);
-        return normalized;
-      },
-      addShape: (shape) => {
-        const nextShape = normalizeShape(shape);
-        commitShapes([...shapes, nextShape], nextShape.id, `AI added ${nextShape.name}`);
-        return nextShape;
-      },
-      updateShape: (id, patch) => {
-        const exists = shapes.some((shape) => shape.id === id);
-        if (!exists) {
-          setNotice(`AI could not find ${id}`);
-          return null;
-        }
-        const next = shapes.map((shape) => (shape.id === id ? normalizeShape({ ...shape, ...patch, id }) : shape));
-        commitShapes(next, id, "AI updated shape");
-        return next.find((shape) => shape.id === id) ?? null;
-      },
-      deleteShape: (id) => {
-        const exists = shapes.some((shape) => shape.id === id);
-        if (!exists) {
-          setNotice(`AI could not find ${id}`);
-          return false;
-        }
-        commitShapes(shapes.filter((shape) => shape.id !== id), selectedIds.filter((selectedId) => selectedId !== id), "AI deleted shape");
-        return true;
-      },
-      select: (ids) => {
-        const requested = Array.isArray(ids) ? ids : ids ? [ids] : [];
-        const valid = requested.filter((id) => shapes.some((shape) => shape.id === id));
-        setSelectedIds(valid);
-        setNotice(valid.length ? `AI selected ${valid.length} shape${valid.length === 1 ? "" : "s"}` : "AI cleared selection");
-        return valid;
-      },
-      clear: clearDesign,
-      createHouse: (options) => createHouseScene(options?.replace ?? true),
-      createPerfScene: (count) => createPerfScene(count),
-      run: (command, payload = {}) => {
-        if (command === "createHouse") return api.createHouse({ replace: payload.replace });
-        if (command === "createPerfScene" || command === "perfScene") return api.createPerfScene(payload.count);
-        if (command === "clear") return api.clear();
-        if (command === "addShape" && payload.shape) return api.addShape(payload.shape);
-        if (command === "setShapes" && payload.shapes) return api.setShapes(payload.shapes, payload.ids ?? null);
-        if (command === "updateShape" && payload.id && payload.patch) return api.updateShape(payload.id, payload.patch);
-        if (command === "deleteShape" && payload.id) return api.deleteShape(payload.id);
-        if (command === "select") return api.select(payload.ids ?? payload.id ?? null);
-        throw new Error(`Unknown AI command: ${command}`);
-      },
-    };
-
-    const handleCommand = (event: Event) => {
-      const detail = (event as CustomEvent<{ command?: string; payload?: AiCommandPayload }>).detail;
-      if (!detail?.command) {
-        return;
-      }
-      try {
-        const result = api.run(detail.command, detail.payload);
-        window.dispatchEvent(new CustomEvent("sketchforge:ai-result", { detail: { command: detail.command, ok: true, result } }));
-      } catch (error) {
-        window.dispatchEvent(
-          new CustomEvent("sketchforge:ai-result", {
-            detail: { command: detail.command, ok: false, error: error instanceof Error ? error.message : "AI command failed" },
-          }),
-        );
-      }
-    };
-
-    window.sketchforgeAI = api;
-    window.sketchforgeBridge = api;
-    window.addEventListener("sketchforge:ai-command", handleCommand);
-    return () => {
-      window.removeEventListener("sketchforge:ai-command", handleCommand);
-      if (window.sketchforgeAI === api) {
-        delete window.sketchforgeAI;
-      }
-      if (window.sketchforgeBridge === api) {
-        delete window.sketchforgeBridge;
-      }
-    };
-  }, [clearDesign, commitShapes, createHouseScene, createPerfScene, notice, selectedIds, shapes]);
 
   const nudgeSelected = useCallback(
     (deltaX: number, deltaZ: number) => {
@@ -5492,7 +5142,6 @@ export function SketchForgeEditor({
           onExport={exportDesign}
           onImportFiles={selectFiles}
           onPickFile={() => fileInputRef.current?.click()}
-          onBuildFromCode={buildFromCode}
           onNotice={setNotice}
         />
       ) : null}
@@ -5824,7 +5473,6 @@ function TopActionPanel({
   panel,
   shapeCount,
   scopeLabel,
-  onBuildFromCode,
   onClose,
   onExport,
   onImportFiles,
@@ -5834,14 +5482,12 @@ function TopActionPanel({
   panel: Exclude<TopPanel, null>;
   shapeCount: number;
   scopeLabel: "selected" | "total";
-  onBuildFromCode: (source: string) => void;
   onClose: () => void;
   onExport: (format: ExportFormat) => void;
   onImportFiles: (files: FileList | File[]) => void;
   onPickFile: () => void;
   onNotice: (message: string) => void;
 }) {
-  const [buildCode, setBuildCode] = useState("");
   const title =
     panel === "profile"
       ? "Profile"
@@ -5851,9 +5497,7 @@ function TopActionPanel({
           ? "Tips"
           : panel === "export"
             ? "Export"
-            : panel === "builder"
-              ? "AI Build"
-              : "Import";
+            : "Import";
 
   return (
     <div className="top-action-panel" role="dialog" aria-label={title}>
@@ -5895,22 +5539,6 @@ function TopActionPanel({
           <button onClick={() => onExport("obj")}>
             <ToolbarExportIcon />
             Download OBJ
-          </button>
-        </div>
-      ) : null}
-      {panel === "builder" ? (
-        <div className="top-action-body ai-build-body">
-          <label>
-            <span>Prompt for AI</span>
-            <textarea readOnly value={AI_BUILD_PROMPT} />
-          </label>
-          <label>
-            <span>Paste AI code</span>
-            <textarea value={buildCode} onChange={(event) => setBuildCode(event.currentTarget.value)} placeholder='{"shapes":[{"name":"Box","kind":"box","color":"#d41721","width":20,"depth":20,"height":20}]}' />
-          </label>
-          <button onClick={() => onBuildFromCode(buildCode)}>
-            <Code2 size={18} />
-            Build
           </button>
         </div>
       ) : null}

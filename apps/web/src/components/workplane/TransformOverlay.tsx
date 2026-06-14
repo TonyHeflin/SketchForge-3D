@@ -102,7 +102,7 @@ export function TransformOverlay({
             <line className="rotation-zero-line" x1="0" y1="0" x2="0" y2="-92" />
             <line className="rotation-current-line" x1="0" y1="0" x2={activeLine.x} y2={activeLine.y} />
             <text className="rotation-zero-label" x="0" y="-75">
-              0Β°
+              0&deg;
             </text>
           </g>
         </svg>
@@ -173,7 +173,7 @@ export function TransformOverlay({
               }
             }}
           />
-          <span>Β°</span>
+          <span>&deg;</span>
         </label>
       ) : null}
       {box.handles.map((handle) => (

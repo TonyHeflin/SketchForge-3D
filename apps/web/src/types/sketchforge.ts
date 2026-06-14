@@ -16,8 +16,6 @@ export type ShapeKind =
   | "wedge"
   | "polygon"
   | "icosahedron"
-  | "star"
-  | "heart"
   | "mesh";
 
 export type ShapeAsset = {

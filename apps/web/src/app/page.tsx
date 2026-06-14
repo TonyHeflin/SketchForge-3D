@@ -3,6 +3,7 @@
 import { Clock3, FileUp, Grid3X3, HomeIcon, List, Plus, Search, Settings, SlidersHorizontal, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SketchForgeEditor, importedShapeFromStl } from "@/components/SketchForgeEditor";
+import { createLocalId } from "@/lib/localIds";
 import { DEFAULT_SNAP_GRID, DEFAULT_WORKPLANE_WORKSPACE, normalizeSnapGrid, normalizeWorkspaceSettings } from "@/lib/workplaneSettings";
 import type { GridSize, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
@@ -44,6 +45,7 @@ const PROJECT_SHAPES_STORE_NAME = "projectShapes";
 const DOWNLOAD_MODE_STORAGE_KEY = "sketchForge.downloadMode";
 const DOWNLOAD_FOLDER_STORAGE_KEY = "sketchForge.downloadFolder";
 const PROJECT_ACCENTS: DashboardProject["accent"][] = ["cyan", "green", "gold", "red"];
+const STATIC_EXPORT_BUILD = process.env.NEXT_PUBLIC_STATIC_EXPORT === "true";
 
 function formatUpdated(timestamp: number) {
   const age = Date.now() - timestamp;
@@ -91,7 +93,18 @@ async function saveProjectShapes(projectId: string, shapes: WorkplaneShape[], re
   const database = await openProjectShapesDb();
   return new Promise<void>((resolve, reject) => {
     const transaction = database.transaction(PROJECT_SHAPES_STORE_NAME, "readwrite");
-    transaction.objectStore(PROJECT_SHAPES_STORE_NAME).put({ id: projectId, revision, shapes, updatedAt: Date.now() } satisfies ProjectShapeRecord);
+    const store = transaction.objectStore(PROJECT_SHAPES_STORE_NAME);
+    const existingRequest = store.get(projectId);
+    existingRequest.onerror = () => {
+      transaction.abort();
+    };
+    existingRequest.onsuccess = () => {
+      const existing = existingRequest.result as ProjectShapeRecord | undefined;
+      if (existing && existing.revision > revision) {
+        return;
+      }
+      store.put({ id: projectId, revision, shapes, updatedAt: Date.now() } satisfies ProjectShapeRecord);
+    };
     transaction.oncomplete = () => {
       database.close();
       resolve();
@@ -208,7 +221,7 @@ function mergeProjectsForStorage(projects: DashboardProject[]) {
 function newProject(name: string, index: number, shapeCount = 0): DashboardProject {
   const now = Date.now();
   return {
-    id: crypto.randomUUID(),
+    id: createLocalId("project"),
     name,
     createdAt: now,
     updatedAt: now,
@@ -240,6 +253,8 @@ export default function Home() {
   const [projectShapesById, setProjectShapesById] = useState<Record<string, ProjectShapeCacheEntry>>({});
   const projectsJsonRef = useRef("");
   const dashboardStlInputRef = useRef<HTMLInputElement | null>(null);
+  const nextProjectRevisionRef = useRef(0);
+  const projectShapeSaveQueuesRef = useRef<Record<string, Promise<void>>>({});
 
   useEffect(() => {
     const { projects: storedProjects, legacyShapes } = readStoredProjects();
@@ -252,7 +267,7 @@ export default function Home() {
         });
       });
     }
-    setDownloadMode(window.localStorage.getItem(DOWNLOAD_MODE_STORAGE_KEY) === "folder" ? "folder" : "browser");
+    setDownloadMode(!STATIC_EXPORT_BUILD && window.localStorage.getItem(DOWNLOAD_MODE_STORAGE_KEY) === "folder" ? "folder" : "browser");
     setDownloadFolder(window.localStorage.getItem(DOWNLOAD_FOLDER_STORAGE_KEY) ?? "");
 
     const params = new URLSearchParams(window.location.search);
@@ -386,6 +401,17 @@ export default function Home() {
 
   const updateProjectSnapshot = useCallback((snapshot: { image: string; projectId: string; shapes: number }) => {
     const version = Date.now();
+    if (STATIC_EXPORT_BUILD) {
+      setProjects((current) =>
+        current.map((project) =>
+          project.id === snapshot.projectId
+            ? { ...project, shapes: snapshot.shapes, thumbnailUrl: snapshot.image, thumbnailVersion: version, updatedAt: version }
+            : project,
+        ),
+      );
+      return;
+    }
+
     setProjects((current) =>
       current.map((project) => (project.id === snapshot.projectId ? { ...project, shapes: snapshot.shapes, updatedAt: version } : project)),
     );
@@ -414,23 +440,42 @@ export default function Home() {
   }, []);
 
   const updateProjectShapes = useCallback((snapshot: { projectId: string; shapes: WorkplaneShape[] }) => {
-    const revision = Date.now();
-    setProjectShapesById((current) => ({
-      ...current,
-      [snapshot.projectId]: { revision, shapes: snapshot.shapes },
-    }));
-    void saveProjectShapes(snapshot.projectId, snapshot.shapes, revision)
+    const revision = Math.max(Date.now(), nextProjectRevisionRef.current + 1);
+    nextProjectRevisionRef.current = revision;
+    setProjectShapesById((current) => {
+      const existing = current[snapshot.projectId];
+      if (existing && existing.revision > revision) {
+        return current;
+      }
+      return {
+        ...current,
+        [snapshot.projectId]: { revision, shapes: snapshot.shapes },
+      };
+    });
+
+    const previousSave = projectShapeSaveQueuesRef.current[snapshot.projectId] ?? Promise.resolve();
+    const queuedSave = previousSave.catch(() => undefined).then(() => saveProjectShapes(snapshot.projectId, snapshot.shapes, revision));
+    projectShapeSaveQueuesRef.current[snapshot.projectId] = queuedSave;
+
+    void queuedSave
       .then(() => {
         setProjects((current) =>
           current.map((project) =>
-            project.id === snapshot.projectId
+            project.id === snapshot.projectId && (project.revision ?? 0) <= revision
               ? { ...project, shapes: snapshot.shapes.length, updatedAt: revision, revision }
               : project,
           ),
         );
       })
       .catch((error) => {
-        setDashboardNotice(error instanceof Error ? error.message : "Could not save project shapes");
+        if (projectShapeSaveQueuesRef.current[snapshot.projectId] === queuedSave) {
+          setDashboardNotice(error instanceof Error ? error.message : "Could not save project shapes");
+        }
+      })
+      .finally(() => {
+        if (projectShapeSaveQueuesRef.current[snapshot.projectId] === queuedSave) {
+          delete projectShapeSaveQueuesRef.current[snapshot.projectId];
+        }
       });
   }, []);
 
@@ -521,7 +566,9 @@ export default function Home() {
     if (activeProjectId === projectId) {
       setActiveProjectId(null);
     }
-    void fetch(`/api/project-thumbnail?projectId=${encodeURIComponent(projectId)}`, { method: "DELETE" });
+    if (!STATIC_EXPORT_BUILD) {
+      void fetch(`/api/project-thumbnail?projectId=${encodeURIComponent(projectId)}`, { method: "DELETE" });
+    }
     void deleteProjectShapes(projectId).catch(() => {
       setDashboardNotice("Could not delete project shapes from local storage");
     });
@@ -570,6 +617,7 @@ export default function Home() {
           projects={visibleProjects}
           query={query}
           settingsOpen={settingsOpen}
+          staticExportBuild={STATIC_EXPORT_BUILD}
           sortMode={sortMode}
           viewMode={viewMode}
           onCloseSettings={() => setSettingsOpen(false)}
@@ -612,6 +660,7 @@ function Dashboard({
   projects,
   query,
   settingsOpen,
+  staticExportBuild,
   sortMode,
   viewMode,
   onCloseSettings,
@@ -633,6 +682,7 @@ function Dashboard({
   projects: DashboardProject[];
   query: string;
   settingsOpen: boolean;
+  staticExportBuild: boolean;
   sortMode: string;
   viewMode: ViewMode;
   onCloseSettings: () => void;
@@ -805,15 +855,18 @@ function Dashboard({
           </header>
           <label className="dashboard-setting-row">
             <span>Save method</span>
-            <select value={downloadMode} onChange={(event) => onDownloadModeChange(event.currentTarget.value === "folder" ? "folder" : "browser")}>
+            <select
+              value={downloadMode}
+              onChange={(event) => onDownloadModeChange(!staticExportBuild && event.currentTarget.value === "folder" ? "folder" : "browser")}
+            >
               <option value="browser">Browser downloads</option>
-              <option value="folder">Save to folder</option>
+              {!staticExportBuild ? <option value="folder">Save to folder</option> : null}
             </select>
           </label>
           <label className="dashboard-setting-row">
             <span>Folder path</span>
             <input
-              disabled={downloadMode !== "folder"}
+              disabled={staticExportBuild || downloadMode !== "folder"}
               value={downloadFolder}
               onChange={(event) => onDownloadFolderChange(event.currentTarget.value)}
               placeholder="C:\\Users\\spiro\\Downloads"
