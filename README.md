@@ -1,8 +1,8 @@
 <div align="center">
   <table>
     <tr>
-      <td width="180" align="center">
-        <img src="apps/web/public/assets/sketchforge/sketchforge-logo-transparent.png" width="150" alt="SketchForge logo">
+      <td width="145" align="center">
+        <img src="apps/web/public/assets/sketchforge/sketchforge-logo-transparent.png" width="120" alt="SketchForge logo">
       </td>
       <td>
         <h1 align="right">SketchForge</h1>
