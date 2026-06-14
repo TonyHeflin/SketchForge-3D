@@ -14,7 +14,7 @@ import {
   shapeDepth,
   shapeWidth,
   workplaneShapesEqual,
-} from "./workplaneShapes";
+} from "@/lib/workplaneShapes";
 
 function shape(overrides: Partial<WorkplaneShape> = {}): WorkplaneShape {
   return {

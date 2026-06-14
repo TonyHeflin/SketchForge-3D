@@ -8,9 +8,9 @@
     "export": "set STATIC_EXPORT=true&& next build apps/web",
     "start": "next start apps/web",
     "typecheck": "tsc -p apps/web/tsconfig.json --noEmit",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "perf": "vitest run --config vitest.perf.config.ts --reporter verbose",
+    "test": "vitest run --config tests/vitest.config.ts",
+    "test:watch": "vitest --config tests/vitest.config.ts",
+    "perf": "vitest run --config tests/vitest.perf.config.ts --reporter verbose",
     "ci": "npm run typecheck && npm run test"
   },
   "dependencies": {
