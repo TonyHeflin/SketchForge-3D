@@ -33,7 +33,7 @@ function isLocalSameOriginRequest(request: Request) {
   if (origin) {
     try {
       const originUrl = new URL(origin);
-      if (originUrl.origin !== requestUrl.origin || !LOCAL_HOSTS.has(originUrl.hostname)) {
+      if (!LOCAL_HOSTS.has(originUrl.hostname) || originUrl.port !== requestUrl.port || originUrl.protocol !== requestUrl.protocol) {
         return false;
       }
     } catch {
@@ -42,7 +42,7 @@ function isLocalSameOriginRequest(request: Request) {
   }
 
   const fetchSite = request.headers.get("sec-fetch-site");
-  return !fetchSite || fetchSite === "same-origin" || fetchSite === "none";
+  return !fetchSite || fetchSite === "same-origin" || fetchSite === "same-site" || fetchSite === "none";
 }
 
 function decodedBase64ByteLength(value: string) {

@@ -879,10 +879,17 @@ function Dashboard({
 }
 
 function ProjectPreview({ accent, thumbnailUrl }: { accent: DashboardProject["accent"]; thumbnailUrl?: string | null }) {
+  const [failedThumbnailUrl, setFailedThumbnailUrl] = useState<string | null>(null);
+  const showThumbnail = Boolean(thumbnailUrl && thumbnailUrl !== failedThumbnailUrl);
+
+  useEffect(() => {
+    setFailedThumbnailUrl(null);
+  }, [thumbnailUrl]);
+
   return (
     <span className={`project-preview accent-${accent}`} aria-hidden="true">
-      {thumbnailUrl ? (
-        <img className="project-thumbnail-image" src={thumbnailUrl} alt="" />
+      {showThumbnail ? (
+        <img className="project-thumbnail-image" src={thumbnailUrl ?? ""} alt="" onError={() => setFailedThumbnailUrl(thumbnailUrl ?? null)} />
       ) : (
         <>
           <span className="preview-grid" />
