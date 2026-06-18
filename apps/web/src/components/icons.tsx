@@ -107,26 +107,14 @@ export function BlocksModeIcon(props: IconProps) {
   );
 }
 
-export function WorkplaneToolIcon(props: IconProps) {
-  return (
-    <svg viewBox="0 0 55 55" aria-hidden="true" {...props}>
-      <path
-        fill="currentColor"
-        d="m3.4 7.1 42.5-3.3-0.5 46.3-39.8-3.3-2.2-39.7zm8.2 38.4-0.2-5.4-4.4-0.2 0.3 5.3 4.3 0.3zm-0.2-6.1-0.1-4.9-4.5-0.1 0.2 4.7 4.4 0.3zm-0.2-5.6-0.1-4.9-4.5-0.1 0.2 5h4.4zm-0.2-5.8-0.1-5.6-4.6 0.1 0.3 5.4 4.4 0.1zm-0.2-6.2-0.1-6.1-4.8 0.3 0.4 6 4.5-0.2zm-0.1-6.7-0.2-6.5-4.9 0.4 0.3 6.4 4.8-0.3zm5.8 30.8-0.1-5.4-4.3-0.3 0.2 5.3 4.2 0.4zm-0.1-6.1v-4.9l-4.5-0.2 0.2 4.9 4.3 0.2zm-0.1-5.6v-5.2l-4.6-0.1 0.2 5.1 4.4 0.2zm0-6.2v-5.8l-4.7 0.2 0.1 5.5 4.6 0.1zm0-6.3-0.1-6.4-4.8 0.3 0.2 6.3 4.7-0.2zm-0.1-7-0.1-6.6-4.9 0.4 0.2 6.5 4.8-0.3zm6.7 31.7-0.1-5.4-5.4-0.3 0.2 5.3 5.3 0.4zm-0.2-6.1-0.1-5.4-5.2-0.1v5.1l5.3 0.4zm-0.1-6.1v-5.1l-5.3-0.1v5.1l5.3 0.1zm-0.1-6.2v-6l-5.6 0.1 0.1 5.8 5.5 0.1zm-0.1-6.6-0.1-6.5-5.4 0.3 0.1 6.4 5.4-0.2zm-0.2-7.2-0.1-6.5-5.3 0.4 0.1 6.4 5.3-0.3zm7.4 32.7v-5.6l-5.7-0.3 0.1 5.5 5.6 0.4zm-0.1-6.2v-5.4l-5.7-0.3 0.1 5.3 5.6 0.4zm0-6v-5.8h-5.8l0.1 5.5 5.7 0.3zm-0.1-6.7v-6.3l-5.8 0.2 0.1 6 5.7 0.1zm-0.1-6.8v-6.8l-5.8 0.3 0.1 6.7 5.7-0.2zm0-7.4v-6.7l-5.9 0.4 0.1 6.7 5.8-0.4zm7.2 33.7v-5.8l-6.2-0.3v5.6l6.2 0.5zm0-6.4v-5.7l-6.2-0.1v5.5l6.2 0.3zm0-6.3v-5.8l-6.2-0.1v5.8l6.2 0.1zm0-6.8v-6.5l-6.4 0.1v6.3l6.4 0.1zm0-7v-7.1l-6.6 0.4v6.9l6.6-0.2zm0-7.7v-6.7l-6.7 0.4 0.1 6.7 6.6-0.4zm7.1 34.6v-5.7l-6.4-0.4v5.7l6.4 0.4zm0-6.3v-5.9l-6.4-0.2v5.8l6.4 0.3zm0.1-6.5v-5.9l-6.5-0.1v5.8l6.5 0.2zm0.1-6.9v-6.8l-6.6 0.2v6.4l6.6 0.2zm0-7.3 0.1-7.5-6.7 0.4v7.3l6.6-0.2zm0.1-8.2v-6.7l-6.7 0.4v6.8l6.7-0.5z"
-      />
-    </svg>
-  );
+type ToolbarCommandImageProps = { file: string; className?: string };
+
+function ToolbarCommandImage({ file, className }: ToolbarCommandImageProps) {
+  return <img aria-hidden="true" className={["toolbar-command-icon", className].filter(Boolean).join(" ")} src={"/assets/sketchforge/" + file} alt="" draggable={false} />;
 }
 
-export function RulerToolIcon(props: IconProps) {
-  return (
-    <svg viewBox="98 0 60 55" aria-hidden="true" {...props}>
-      <path
-        fill="currentColor"
-        d="m104.8 7.1 11.4-0.5 2.1 30 32.2 1.4-0.4 12.8-42.4-3.5-2.9-40.2zm43.1 41.6 0.3-8.7-6.9-0.4v3.5h-1.4v-3.6l-7.1-0.3v5.5l-1.2-0.1v-5.5l-6.9-0.3v3.6h-1.3v-3.7l-5.7-0.3 0.2 5.3h-1.3l-0.2-5.5-4.8-0.1v-1.3l4.6 0.1-0.5-6.8-3.1 0.1v-1.2l3.1-0.1-0.4-6.4-4.9 0.2-0.1-1.2 4.9-0.2-0.5-5.4h-3.2v-1.4h3.1l-0.4-5.8-7.2 0.2 2.7 36.6 38.2 3.2z"
-      />
-    </svg>
-  );
+export function WorkplaneToolIcon() {
+  return <ToolbarCommandImage file="toolbar-workplane.png" className="workplane-command-icon" />;
 }
 
 export function NotesToolIcon(props: IconProps) {
@@ -140,16 +128,16 @@ export function NotesToolIcon(props: IconProps) {
   );
 }
 
-export function ToolbarCopyIcon(props: IconProps) {
-  return <ToolbarSpriteIcon rect={{ x: 0, y: 6.7, width: 26.1, height: 33.3 }} {...props} />;
+export function ToolbarCopyIcon() {
+  return <ToolbarCommandImage file="toolbar-copy.png" />;
 }
 
 export function ToolbarPasteIcon(props: IconProps) {
   return <ToolbarSpriteIcon rect={{ x: 33.5, y: 6.7, width: 22.9, height: 33.3 }} {...props} />;
 }
 
-export function ToolbarDuplicateIcon(props: IconProps) {
-  return <ToolbarSpriteIcon rect={{ x: 65, y: 6.7, width: 27.5, height: 33.3 }} {...props} />;
+export function ToolbarDuplicateIcon() {
+  return <ToolbarCommandImage file="toolbar-duplicate.png" />;
 }
 
 export function ToolbarTrashIcon(props: IconProps) {
@@ -216,12 +204,12 @@ export function ToolbarCaretDownIcon(props: IconProps) {
   );
 }
 
-export function ToolbarGroupIcon(props: IconProps) {
-  return <ToolbarSpriteIcon rect={{ x: 30.3, y: 46.7, width: 29.1, height: 32.5 }} {...props} />;
+export function ToolbarGroupIcon() {
+  return <ToolbarCommandImage file="toolbar-group.png" />;
 }
 
-export function ToolbarUngroupIcon(props: IconProps) {
-  return <ToolbarSpriteIcon rect={{ x: 65.4, y: 46.7, width: 26.5, height: 32.5 }} {...props} />;
+export function ToolbarUngroupIcon() {
+  return <ToolbarCommandImage file="toolbar-ungroup.png" />;
 }
 
 export function ToolbarAlignIcon(props: IconProps) {
@@ -232,8 +220,8 @@ export function ToolbarMirrorIcon(props: IconProps) {
   return <ToolbarSpriteIcon rect={{ x: 131.4, y: 46.7, width: 27, height: 32.5 }} {...props} />;
 }
 
-export function ToolbarMagnetIcon(props: IconProps) {
-  return <ToolbarSpriteIcon rect={{ x: 167.8, y: 46.7, width: 20.8, height: 32.5 }} {...props} />;
+export function ToolbarSnapGridIcon() {
+  return <ToolbarCommandImage file="toolbar-snap-grid.png" />;
 }
 
 export function ToolbarPaintIcon(props: IconProps) {
@@ -255,10 +243,10 @@ export function ToolbarExportIcon(props: IconProps) {
   );
 }
 
-export function ToolbarSendBackwardIcon(props: IconProps) {
-  return <ToolbarSpriteIcon rect={{ x: 198.3, y: 46.7, width: 27.4, height: 32.5 }} {...props} />;
+export function ToolbarWorkplaneIcon() {
+  return <ToolbarCommandImage file="toolbar-workplane.png" />;
 }
 
-export function ToolbarBringForwardIcon(props: IconProps) {
-  return <ToolbarSpriteIcon rect={{ x: 231.5, y: 46.7, width: 25.7, height: 32.3 }} {...props} />;
+export function ToolbarDropToWorkplaneIcon() {
+  return <ToolbarCommandImage file="toolbar-drop-workplane.png" />;
 }

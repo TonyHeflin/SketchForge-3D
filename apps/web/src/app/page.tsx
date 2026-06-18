@@ -4,6 +4,7 @@ import { Clock3, FileUp, Grid3X3, HomeIcon, List, Plus, Search, Settings, Slider
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SketchForgeEditor, importedShapeFromStl } from "@/components/SketchForgeEditor";
 import { createLocalId } from "@/lib/localIds";
+import { importExtensionSupported } from "@/lib/stlImport";
 import { DEFAULT_SNAP_GRID, DEFAULT_WORKPLANE_WORKSPACE, normalizeSnapGrid, normalizeWorkspaceSettings } from "@/lib/workplaneSettings";
 import type { GridSize, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
@@ -512,8 +513,7 @@ export default function Home() {
 
   const importStlFileFromDashboard = useCallback(
     async (file: File) => {
-      const extension = file.name.split(".").pop()?.toLowerCase();
-      if (extension !== "stl") {
+      if (!importExtensionSupported(file.name)) {
         setDashboardNotice("Unsupported file type. Use STL.");
         return;
       }

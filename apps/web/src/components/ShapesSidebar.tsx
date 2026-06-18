@@ -2,7 +2,7 @@
 
 import { ChevronDown, Search } from "lucide-react";
 import { useState } from "react";
-import { NotesToolIcon, RulerToolIcon, WorkplaneToolIcon } from "./icons";
+import { NotesToolIcon, WorkplaneToolIcon } from "./icons";
 import type { ShapeAsset } from "@/types/sketchforge";
 
 const categories = [
@@ -54,9 +54,6 @@ export function ShapesSidebar({ onAddShape }: ShapesSidebarProps) {
       <div className="sidebar-tools">
         <button className="sidebar-tool" aria-label="Workplane">
           <WorkplaneToolIcon />
-        </button>
-        <button className="sidebar-tool" aria-label="Ruler">
-          <RulerToolIcon />
         </button>
         <button className="sidebar-tool" aria-label="Notes">
           <NotesToolIcon />

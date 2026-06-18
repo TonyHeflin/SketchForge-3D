@@ -1,8 +1,9 @@
 "use client";
 
-import { Box, Check, Expand, Home, Minus, Plus } from "lucide-react";
+import { Home, Minus, Plus } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type DragEvent, type MutableRefObject, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
 import * as THREE from "three";
+import { Brush, Evaluator, HOLLOW_INTERSECTION } from "three-bvh-csg";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import { TextGeometry } from "three/examples/jsm/geometries/TextGeometry.js";
@@ -207,6 +208,49 @@ type MarqueeState = {
   additive: boolean;
   hasMoved: boolean;
 };
+
+type RulerPoint = {
+  id: string;
+  x: number;
+  z: number;
+};
+
+type RulerSegment = {
+  id: string;
+  startId: string;
+  endId: string;
+};
+
+type RulerModel = {
+  points: RulerPoint[];
+  segments: RulerSegment[];
+  startPointId: string | null;
+  hover: { x: number; z: number } | null;
+};
+
+type RulerOverlayState = {
+  points: Array<RulerPoint & { screenX: number; screenY: number }>;
+  segments: Array<RulerSegment & { x1: number; y1: number; x2: number; y2: number; labelX: number; labelY: number; label: string }>;
+  hover: { screenX: number; screenY: number } | null;
+};
+
+type RulerCandidate = {
+  x: number;
+  z: number;
+  pointId?: string;
+};
+
+function RulerGlyph() {
+  return (
+    <svg viewBox="0 0 32 32" width="30" height="30" aria-hidden="true">
+      <path d="M5 9.5 24.5 5 27 16 7.5 20.5 5 9.5Z" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinejoin="round" />
+      <path d="m10 8.5 1 4.2m4-5.3.7 2.9m4.3-4 .9 4.2m-12.3 7 1.7-3.8m4.1 2.8 1.2-2.7m4 1.6 1.5-3.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <circle cx="7.5" cy="24.5" r="2" fill="currentColor" />
+      <circle cx="24.5" cy="24.5" r="2" fill="currentColor" />
+      <path d="M9.5 24.5h13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
 
 type RotationHandleSide = "near" | "right" | "far" | "left";
 type RotationHandleSides = Record<RotationAxis, RotationHandleSide>;
@@ -443,6 +487,117 @@ function projectToScreen(point: THREE.Vector3, state: ThreeState) {
     x: ((projected.x + 1) / 2) * rect.width,
     y: ((1 - projected.y) / 2) * rect.height,
   };
+}
+
+function syncRulerOverlay(
+  state: ThreeState,
+  model: RulerModel,
+  overlayRef: MutableRefObject<RulerOverlayState | null>,
+  setOverlay: Dispatch<SetStateAction<RulerOverlayState | null>>,
+) {
+  const projectedPoints = new Map<string, { screenX: number; screenY: number }>();
+  const points = model.points.map((point) => {
+    const screen = projectToScreen(new THREE.Vector3(point.x, 0.12, point.z), state);
+    const projected = { screenX: screen.x, screenY: screen.y };
+    projectedPoints.set(point.id, projected);
+    return { ...point, ...projected };
+  });
+  const segments = model.segments.flatMap((segment) => {
+    const start = model.points.find((point) => point.id === segment.startId);
+    const end = model.points.find((point) => point.id === segment.endId);
+    const startScreen = projectedPoints.get(segment.startId);
+    const endScreen = projectedPoints.get(segment.endId);
+    if (!start || !end || !startScreen || !endScreen) {
+      return [];
+    }
+    return [
+      {
+        ...segment,
+        x1: startScreen.screenX,
+        y1: startScreen.screenY,
+        x2: endScreen.screenX,
+        y2: endScreen.screenY,
+        labelX: (startScreen.screenX + endScreen.screenX) / 2,
+        labelY: (startScreen.screenY + endScreen.screenY) / 2 - 18,
+        label: formatMeasure(Math.hypot(end.x - start.x, end.z - start.z)),
+      },
+    ];
+  });
+  const hoverScreen = model.hover ? projectToScreen(new THREE.Vector3(model.hover.x, 0.14, model.hover.z), state) : null;
+  const next: RulerOverlayState = {
+    points,
+    segments,
+    hover: hoverScreen ? { screenX: hoverScreen.x, screenY: hoverScreen.y } : null,
+  };
+  const previous = overlayRef.current;
+  const unchanged =
+    previous &&
+    previous.points.length === next.points.length &&
+    previous.segments.length === next.segments.length &&
+    previous.points.every((point, index) => {
+      const candidate = next.points[index];
+      return point.id === candidate.id && Math.abs(point.screenX - candidate.screenX) < 0.2 && Math.abs(point.screenY - candidate.screenY) < 0.2;
+    }) &&
+    previous.segments.every((segment, index) => {
+      const candidate = next.segments[index];
+      return segment.id === candidate.id && Math.abs(segment.labelX - candidate.labelX) < 0.2 && Math.abs(segment.labelY - candidate.labelY) < 0.2;
+    }) &&
+    ((!previous.hover && !next.hover) ||
+      (previous.hover && next.hover && Math.abs(previous.hover.screenX - next.hover.screenX) < 0.2 && Math.abs(previous.hover.screenY - next.hover.screenY) < 0.2));
+  if (!unchanged) {
+    overlayRef.current = next;
+    setOverlay(next);
+  }
+}
+
+function RulerOverlay({
+  overlay,
+  startPointId,
+  active,
+  onPointPointerDown,
+  onSegmentPointerDown,
+}: {
+  overlay: RulerOverlayState;
+  startPointId: string | null;
+  active: boolean;
+  onPointPointerDown: (event: ReactPointerEvent<SVGCircleElement>, pointId: string) => void;
+  onSegmentPointerDown: (event: ReactPointerEvent<SVGLineElement>, segmentId: string) => void;
+}) {
+  return (
+    <div className={`ruler-overlay ${active ? "active" : ""}`} aria-label="Ruler measurements">
+      <svg className="ruler-guides" width="100%" height="100%" aria-hidden="true">
+        {overlay.segments.map((segment) => (
+          <g key={segment.id}>
+            <line className="ruler-segment" x1={segment.x1} y1={segment.y1} x2={segment.x2} y2={segment.y2} />
+            <line
+              className="ruler-segment-hit"
+              x1={segment.x1}
+              y1={segment.y1}
+              x2={segment.x2}
+              y2={segment.y2}
+              onPointerDown={(event) => onSegmentPointerDown(event, segment.id)}
+            />
+          </g>
+        ))}
+        {overlay.points.map((point) => (
+          <circle
+            key={point.id}
+            className={`ruler-point ${point.id === startPointId ? "pending" : ""}`}
+            cx={point.screenX}
+            cy={point.screenY}
+            r="5"
+            onPointerDown={(event) => onPointPointerDown(event, point.id)}
+          />
+        ))}
+        {active && overlay.hover ? <circle className="ruler-hover-point" cx={overlay.hover.screenX} cy={overlay.hover.screenY} r="5" /> : null}
+      </svg>
+      {overlay.segments.map((segment) => (
+        <span key={`${segment.id}-label`} className="ruler-label" style={{ left: segment.labelX, top: segment.labelY }}>
+          {segment.label}
+        </span>
+      ))}
+    </div>
+  );
 }
 
 function shapeCenter(shape: WorkplaneShape) {
@@ -942,6 +1097,9 @@ export function WorkplaneViewport({
   const [pinnedRotationWheelView, setPinnedRotationWheelView] = useState<PinnedRotationWheelView | null>(null);
   const [editingDimension, setEditingDimension] = useState<EditingDimension>(null);
   const [editingRotation, setEditingRotation] = useState<EditingRotation>(null);
+  const [rulerMode, setRulerMode] = useState(false);
+  const [rulerModel, setRulerModel] = useState<RulerModel>({ points: [], segments: [], startPointId: null, hover: null });
+  const [rulerOverlay, setRulerOverlay] = useState<RulerOverlayState | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const threeRef = useRef<ThreeState | null>(null);
   const shapesRef = useRef(shapes);
@@ -961,6 +1119,10 @@ export function WorkplaneViewport({
   const transformOverlayRef = useRef<TransformOverlayState | null>(null);
   const alignOverlayRef = useRef<AlignOverlayState | null>(null);
   const mirrorOverlayRef = useRef<MirrorOverlayState | null>(null);
+  const rulerModeRef = useRef(false);
+  const rulerModelRef = useRef(rulerModel);
+  const rulerOverlayRef = useRef<RulerOverlayState | null>(null);
+  const rulerIdRef = useRef(0);
   const alignModeRef = useRef(alignMode);
   const alignAnchorIdRef = useRef(alignAnchorId);
   const alignHandlesRef = useRef(alignHandles);
@@ -1026,7 +1188,7 @@ export function WorkplaneViewport({
 
   useEffect(() => {
     shapesRef.current = shapes;
-    rebuildShapes(threeRef.current, shapes, selectedIdsRef.current);
+    rebuildShapes(threeRef.current, shapes, selectedIdsRef.current, !transformRef.current && !dragRef.current);
     if (threeRef.current) {
       syncTransformOverlay(threeRef.current, shapes, selectedIdsRef.current, transformOverlayRef, setTransformOverlay, Boolean(transformRef.current || dragRef.current));
       syncAlignOverlay(threeRef.current, alignReferenceShapesRef.current, selectedIdsRef.current, alignModeRef.current, alignAnchorIdRef.current, alignHandlesRef.current, alignOverlayRef, setAlignOverlay);
@@ -1065,7 +1227,7 @@ export function WorkplaneViewport({
       setActiveTransformKind(null);
     }
     selectedIdsRef.current = selectedIds;
-    rebuildShapes(threeRef.current, shapesRef.current, selectedIds);
+    rebuildShapes(threeRef.current, shapesRef.current, selectedIds, !transformRef.current && !dragRef.current);
     if (threeRef.current) {
       syncTransformOverlay(threeRef.current, shapesRef.current, selectedIds, transformOverlayRef, setTransformOverlay, Boolean(transformRef.current || dragRef.current));
       syncAlignOverlay(threeRef.current, alignReferenceShapesRef.current, selectedIds, alignModeRef.current, alignAnchorIdRef.current, alignHandlesRef.current, alignOverlayRef, setAlignOverlay);
@@ -1095,6 +1257,18 @@ export function WorkplaneViewport({
   useEffect(() => {
     snapRef.current = snap;
   }, [snap]);
+
+  useEffect(() => {
+    rulerModeRef.current = rulerMode;
+  }, [rulerMode]);
+
+  useEffect(() => {
+    rulerModelRef.current = rulerModel;
+    if (threeRef.current) {
+      syncRulerOverlay(threeRef.current, rulerModel, rulerOverlayRef, setRulerOverlay);
+      threeRef.current.needsRender = true;
+    }
+  }, [rulerModel]);
 
   useEffect(() => {
     placementElevationRef.current = placementElevation;
@@ -1163,6 +1337,7 @@ export function WorkplaneViewport({
         );
         syncAlignOverlay(state, alignReferenceShapesRef.current, selectedIdsRef.current, alignModeRef.current, alignAnchorIdRef.current, alignHandlesRef.current, alignOverlayRef, setAlignOverlay);
         syncMirrorOverlay(state, mirrorReferenceShapesRef.current, selectedIdsRef.current, mirrorModeRef.current, mirrorOverlayRef, setMirrorOverlay);
+        syncRulerOverlay(state, rulerModelRef.current, rulerOverlayRef, setRulerOverlay);
         state.lastOverlaySync = now;
       }
       const renderStart = performance.now();
@@ -1258,6 +1433,166 @@ export function WorkplaneViewport({
     };
   }, [toRawPlanePoint]);
   const toPlanePoint = useCallback((clientX: number, clientY: number) => toPlanePointAtY(clientX, clientY, 0), [toPlanePointAtY]);
+
+  const storeRulerModel = useCallback((next: RulerModel) => {
+    rulerModelRef.current = next;
+    setRulerModel(next);
+  }, []);
+
+  const setRulerActive = useCallback((active: boolean) => {
+    rulerModeRef.current = active;
+    setRulerMode(active);
+    if (!active) {
+      const current = rulerModelRef.current;
+      storeRulerModel({ ...current, startPointId: null, hover: null });
+    }
+  }, [storeRulerModel]);
+
+  const resolveRulerCandidate = useCallback(
+    (clientX: number, clientY: number): RulerCandidate | null => {
+      const state = threeRef.current;
+      if (!state) {
+        return null;
+      }
+      const raw = toRawPlanePoint(clientX, clientY, state.dragPlane);
+      if (!raw) {
+        return null;
+      }
+      const step = snapStep(snapRef.current);
+      const bounds = workspaceRef.current;
+      const snapped = {
+        x: clamp(snapValue(raw.x, step), -bounds.width / 2, bounds.width / 2),
+        z: clamp(snapValue(raw.z, step), -bounds.depth / 2, bounds.depth / 2),
+      };
+
+      const model = rulerModelRef.current;
+      const rect = state.renderer.domElement.getBoundingClientRect();
+      const localX = clientX - rect.left;
+      const localY = clientY - rect.top;
+      const closestPoint = model.points.reduce<{ point: RulerPoint; distance: number } | null>((closest, point) => {
+        const screen = projectToScreen(new THREE.Vector3(point.x, 0.12, point.z), state);
+        const distance = Math.hypot(screen.x - localX, screen.y - localY);
+        if (distance <= 12 && (!closest || distance < closest.distance)) {
+          return { point, distance };
+        }
+        return closest;
+      }, null);
+      if (closestPoint) {
+        return { x: closestPoint.point.x, z: closestPoint.point.z, pointId: closestPoint.point.id };
+      }
+
+      const closestSegment = model.segments.reduce<{ segment: RulerSegment; distance: number } | null>((closest, segment) => {
+        const start = model.points.find((point) => point.id === segment.startId);
+        const end = model.points.find((point) => point.id === segment.endId);
+        if (!start || !end) {
+          return closest;
+        }
+        const a = projectToScreen(new THREE.Vector3(start.x, 0.12, start.z), state);
+        const b = projectToScreen(new THREE.Vector3(end.x, 0.12, end.z), state);
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const amount = dx * dx + dy * dy > 0.001 ? clamp(((localX - a.x) * dx + (localY - a.y) * dy) / (dx * dx + dy * dy), 0, 1) : 0;
+        const distance = Math.hypot(localX - (a.x + dx * amount), localY - (a.y + dy * amount));
+        if (distance <= 10 && (!closest || distance < closest.distance)) {
+          return { segment, distance };
+        }
+        return closest;
+      }, null);
+
+      if (closestSegment) {
+        const start = model.points.find((point) => point.id === closestSegment.segment.startId);
+        const end = model.points.find((point) => point.id === closestSegment.segment.endId);
+        if (start && end) {
+          const dx = end.x - start.x;
+          const dz = end.z - start.z;
+          const length = Math.hypot(dx, dz);
+          if (length > 0.001) {
+            const directionX = dx / length;
+            const directionZ = dz / length;
+            const rawAlong = clamp((raw.x - start.x) * directionX + (raw.z - start.z) * directionZ, 0, length);
+            const along = clamp(step > 0 ? snapValue(rawAlong, step) : rawAlong, 0, length);
+            const x = start.x + directionX * along;
+            const z = start.z + directionZ * along;
+            const existing = model.points.find((point) => Math.hypot(point.x - x, point.z - z) < 0.001);
+            return { x, z, pointId: existing?.id };
+          }
+        }
+      }
+
+      const existing = model.points.find((point) => Math.hypot(point.x - snapped.x, point.z - snapped.z) < 0.001);
+      return { ...snapped, pointId: existing?.id };
+    },
+    [toRawPlanePoint],
+  );
+
+  const selectRulerCandidate = useCallback(
+    (candidate: RulerCandidate) => {
+      const current = rulerModelRef.current;
+      const existing = candidate.pointId ? current.points.find((point) => point.id === candidate.pointId) : current.points.find((point) => Math.hypot(point.x - candidate.x, point.z - candidate.z) < 0.001);
+      const point = existing ?? { id: `ruler-point-${++rulerIdRef.current}`, x: candidate.x, z: candidate.z };
+      const points = existing ? current.points : [...current.points, point];
+      if (!current.startPointId) {
+        storeRulerModel({ ...current, points, startPointId: point.id, hover: { x: point.x, z: point.z } });
+        return;
+      }
+      if (current.startPointId === point.id) {
+        return;
+      }
+
+      const duplicate = current.segments.some(
+        (segment) =>
+          (segment.startId === current.startPointId && segment.endId === point.id) ||
+          (segment.startId === point.id && segment.endId === current.startPointId),
+      );
+      const segments = duplicate
+        ? current.segments
+        : [...current.segments, { id: `ruler-segment-${++rulerIdRef.current}`, startId: current.startPointId, endId: point.id }];
+      storeRulerModel({ points, segments, startPointId: null, hover: null });
+      rulerModeRef.current = false;
+      setRulerMode(false);
+    },
+    [storeRulerModel],
+  );
+
+  const updateRulerHover = useCallback(
+    (clientX: number, clientY: number) => {
+      if (!rulerModeRef.current) {
+        return;
+      }
+      const candidate = resolveRulerCandidate(clientX, clientY);
+      const current = rulerModelRef.current;
+      const hover = candidate ? { x: candidate.x, z: candidate.z } : null;
+      if ((!current.hover && !hover) || (current.hover && hover && Math.hypot(current.hover.x - hover.x, current.hover.z - hover.z) < 0.0001)) {
+        return;
+      }
+      storeRulerModel({ ...current, hover });
+    },
+    [resolveRulerCandidate, storeRulerModel],
+  );
+
+  const removeRulerSegment = useCallback(
+    (segmentId: string) => {
+      const current = rulerModelRef.current;
+      const segments = current.segments.filter((segment) => segment.id !== segmentId);
+      const usedPointIds = new Set(segments.flatMap((segment) => [segment.startId, segment.endId]));
+      const points = current.points.filter((point) => usedPointIds.has(point.id) || point.id === current.startPointId);
+      storeRulerModel({ ...current, points, segments });
+    },
+    [storeRulerModel],
+  );
+
+  const removeRulerPoint = useCallback(
+    (pointId: string) => {
+      const current = rulerModelRef.current;
+      const connected = current.segments.filter((segment) => segment.startId === pointId || segment.endId === pointId);
+      if (connected.length > 0) {
+        removeRulerSegment(connected[connected.length - 1].id);
+        return;
+      }
+      storeRulerModel({ ...current, points: current.points.filter((point) => point.id !== pointId), startPointId: current.startPointId === pointId ? null : current.startPointId });
+    },
+    [removeRulerSegment, storeRulerModel],
+  );
 
   const setMarqueeFromState = useCallback((marquee: MarqueeState | null) => {
     if (!marquee) {
@@ -1403,6 +1738,8 @@ export function WorkplaneViewport({
         setRotationReadout(null);
       }
       if (state) {
+        clearCutPreviewOverlays(state);
+        state.needsRender = true;
         state.controls.enabled = false;
       }
       onInteractionActiveChange?.(true);
@@ -1586,8 +1923,10 @@ export function WorkplaneViewport({
     setPinnedRotationWheelView(null);
     setRotationReadout(null);
     if (threeRef.current) {
+      syncCutPreviewOverlays(threeRef.current, shapesRef.current);
       setSelectionHelpersVisible(threeRef.current, true);
       threeRef.current.controls.enabled = true;
+      threeRef.current.needsRender = true;
     }
     onInteractionActiveChange?.(false);
     bakeRotatedShapes.forEach((id) => onUpdateShape(id, { bakeTransform: true }));
@@ -1780,6 +2119,15 @@ export function WorkplaneViewport({
       }
       const rect = state.renderer.domElement.getBoundingClientRect();
 
+      if (rulerModeRef.current) {
+        event.preventDefault();
+        const candidate = resolveRulerCandidate(event.clientX, event.clientY);
+        if (candidate) {
+          selectRulerCandidate(candidate);
+        }
+        return;
+      }
+
       if (workplaneModeRef.current) {
         event.preventDefault();
         const id = pickShape(event.clientX, event.clientY);
@@ -1900,6 +2248,8 @@ export function WorkplaneViewport({
         } else {
           setRotationReadout(null);
         }
+        clearCutPreviewOverlays(state);
+        state.needsRender = true;
         state.controls.enabled = false;
         onInteractionActiveChange?.(true);
         return;
@@ -1987,6 +2337,8 @@ export function WorkplaneViewport({
         primaryStartZ: shape.z,
         items,
       };
+      clearCutPreviewOverlays(state);
+      state.needsRender = true;
       state.controls.enabled = false;
       onInteractionActiveChange?.(true);
     },
@@ -1998,6 +2350,8 @@ export function WorkplaneViewport({
       onWorkplaneModeChange,
       pickShape,
       pickTransformHandle,
+      resolveRulerCandidate,
+      selectRulerCandidate,
       setMarqueeFromState,
       toPlanePoint,
       toPlanePointAtY,
@@ -2007,6 +2361,10 @@ export function WorkplaneViewport({
 
   const handlePointerMove = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (rulerModeRef.current) {
+        updateRulerHover(event.clientX, event.clientY);
+        return;
+      }
       const transform = transformRef.current;
       if (transform) {
         updateTransform(event.clientX, event.clientY, event.shiftKey, event.altKey);
@@ -2072,7 +2430,7 @@ export function WorkplaneViewport({
         threeRef.current.needsRender = true;
       }
     },
-    [setMarqueeFromState, toPlanePoint, updateTransform],
+    [setMarqueeFromState, toPlanePoint, updateRulerHover, updateTransform],
   );
 
   const finishDrag = useCallback(
@@ -2097,8 +2455,10 @@ export function WorkplaneViewport({
         setActiveTransformKind(null);
         setRotationReadout(null);
         if (state) {
+          syncCutPreviewOverlays(state, shapesRef.current);
           setSelectionHelpersVisible(state, true);
           state.controls.enabled = true;
+          state.needsRender = true;
         }
         onInteractionActiveChange?.(false);
         return;
@@ -2161,7 +2521,9 @@ export function WorkplaneViewport({
 
       dragRef.current = null;
       if (state) {
+        syncCutPreviewOverlays(state, previewShapesForDrag(shapesRef.current, drag));
         state.controls.enabled = true;
+        state.needsRender = true;
       }
       onInteractionActiveChange?.(false);
     },
@@ -2209,6 +2571,61 @@ export function WorkplaneViewport({
     state.needsRender = true;
   }, []);
 
+  const toggleRulerMode = useCallback(() => {
+    const next = !rulerModeRef.current;
+    rulerModeRef.current = next;
+    setRulerMode(next);
+    const current = rulerModelRef.current;
+    storeRulerModel({ ...current, startPointId: null, hover: null });
+    if (next) {
+      onWorkplaneModeChange(false);
+      onSelectShape(null);
+    }
+  }, [onSelectShape, onWorkplaneModeChange, storeRulerModel]);
+
+  const handleRulerPointPointerDown = useCallback(
+    (event: ReactPointerEvent<SVGCircleElement>, pointId: string) => {
+      if (event.button === 1) {
+        event.preventDefault();
+        event.stopPropagation();
+        removeRulerPoint(pointId);
+        return;
+      }
+      if (event.button !== 0 || !rulerModeRef.current) {
+        return;
+      }
+      const point = rulerModelRef.current.points.find((candidate) => candidate.id === pointId);
+      if (!point) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      selectRulerCandidate({ x: point.x, z: point.z, pointId });
+    },
+    [removeRulerPoint, selectRulerCandidate],
+  );
+
+  const handleRulerSegmentPointerDown = useCallback(
+    (event: ReactPointerEvent<SVGLineElement>, segmentId: string) => {
+      if (event.button === 1) {
+        event.preventDefault();
+        event.stopPropagation();
+        removeRulerSegment(segmentId);
+        return;
+      }
+      if (event.button !== 0 || !rulerModeRef.current) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      const candidate = resolveRulerCandidate(event.clientX, event.clientY);
+      if (candidate) {
+        selectRulerCandidate(candidate);
+      }
+    },
+    [removeRulerSegment, resolveRulerCandidate, selectRulerCandidate],
+  );
+
   useEffect(() => {
     const isTypingTarget = (target: EventTarget | null) => {
       if (!(target instanceof HTMLElement)) {
@@ -2223,7 +2640,10 @@ export function WorkplaneViewport({
       }
 
       const key = event.key.toLowerCase();
-      if (key === "f" || event.key === "Home") {
+      if (event.key === "Escape" && rulerModeRef.current) {
+        event.preventDefault();
+        setRulerActive(false);
+      } else if (key === "f" || event.key === "Home") {
         event.preventDefault();
         resetView();
       } else if (event.key === "+" || event.key === "=") {
@@ -2237,7 +2657,7 @@ export function WorkplaneViewport({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [resetView, zoomCamera]);
+  }, [resetView, setRulerActive, zoomCamera]);
 
   return (
     <main className="workplane-stage">
@@ -2256,21 +2676,18 @@ export function WorkplaneViewport({
         <button aria-label="Home" onClick={resetView}>
           <Home size={28} />
         </button>
-        <button aria-label="Fit view" onClick={resetView}>
-          <Expand size={24} />
-        </button>
         <button aria-label="Zoom in" onClick={() => zoomCamera(0.7)}>
           <Plus size={33} />
         </button>
         <button aria-label="Zoom out" onClick={() => zoomCamera(1.35)}>
           <Minus size={33} />
         </button>
-        <button aria-label="Camera mode" onClick={resetView}>
-          <Box size={27} />
+        <button className={rulerMode ? "active" : ""} aria-label="Ruler" title="Ruler" aria-pressed={rulerMode} onClick={toggleRulerMode}>
+          <RulerGlyph />
         </button>
       </div>
 
-      <section className={`workplane-wrap ${workplaneMode ? "placing-workplane" : ""}`} aria-label="Workplane">
+      <section className={`workplane-wrap ${workplaneMode ? "placing-workplane" : ""} ${rulerMode ? "ruler-mode" : ""}`} aria-label="Workplane">
         <div className="workplane-plane">
           <div
             className="three-workplane-host"
@@ -2286,7 +2703,7 @@ export function WorkplaneViewport({
             onPointerCancel={finishDrag}
           />
           {marqueeRect ? <div className="selection-marquee" style={marqueeRect} /> : null}
-          {transformOverlay && !alignMode && !mirrorMode ? (
+          {transformOverlay && !alignMode && !mirrorMode && !rulerMode ? (
             <TransformOverlay
               box={transformOverlay}
               measureKey={pinnedMeasureKey ?? hoverMeasureKey}
@@ -2316,6 +2733,15 @@ export function WorkplaneViewport({
           ) : null}
           {alignOverlay ? <AlignOverlay overlay={alignOverlay} onAlign={onAlignSelection} onPreview={onAlignPreview} onPreviewClear={onAlignPreviewClear} /> : null}
           {mirrorOverlay ? <MirrorOverlay overlay={mirrorOverlay} onMirror={onMirrorSelection} onPreview={onMirrorPreview} onPreviewClear={onMirrorPreviewClear} /> : null}
+          {rulerOverlay && (rulerOverlay.points.length > 0 || rulerOverlay.hover) ? (
+            <RulerOverlay
+              overlay={rulerOverlay}
+              startPointId={rulerModel.startPointId}
+              active={rulerMode}
+              onPointPointerDown={handleRulerPointPointerDown}
+              onSegmentPointerDown={handleRulerSegmentPointerDown}
+            />
+          ) : null}
         </div>
       </section>
 
@@ -2593,7 +3019,206 @@ function linesFromPoints(points: number[], material: THREE.LineBasicMaterial) {
   return new THREE.LineSegments(geometry, material);
 }
 
-function rebuildShapes(state: ThreeState | null, shapes: WorkplaneShape[], selectedIds: string[]) {
+type CutPreviewShapeFrame = {
+  shape: WorkplaneShape;
+  worldBounds: THREE.Box3;
+};
+
+function shapeCutPreviewFrames(state: ThreeState, shapes: WorkplaneShape[]) {
+  return shapes.reduce<Record<string, CutPreviewShapeFrame>>((frames, shape) => {
+    const object = findShapeObject(state, shape.id);
+    if (!object) {
+      return frames;
+    }
+    object.updateMatrixWorld(true);
+    const worldBounds = new THREE.Box3().setFromObject(object);
+    if (!worldBounds.isEmpty()) {
+      frames[shape.id] = { shape, worldBounds };
+    }
+    return frames;
+  }, {});
+}
+
+type CutPreviewBrushCacheEntry = {
+  signature: string;
+  brush: Brush;
+};
+
+const cutPreviewBrushCache = new WeakMap<THREE.Object3D, CutPreviewBrushCacheEntry>();
+const cutPreviewEvaluator = new Evaluator();
+cutPreviewEvaluator.useGroups = false;
+cutPreviewEvaluator.attributes = ["position", "normal"];
+
+function cutPreviewObjectSignature(root: THREE.Object3D) {
+  const parts: string[] = [];
+  root.updateMatrixWorld(true);
+  const inverseRoot = root.matrixWorld.clone().invert();
+  root.traverse((child) => {
+    if (!(child instanceof THREE.Mesh) || !child.visible || !(child.geometry instanceof THREE.BufferGeometry)) {
+      return;
+    }
+    const relativeMatrix = inverseRoot.clone().multiply(child.matrixWorld);
+    parts.push(child.geometry.uuid, ...relativeMatrix.elements.map((value) => value.toFixed(5)));
+  });
+  return parts.join(":");
+}
+
+function cutPreviewBrushFromObject(root: THREE.Object3D) {
+  const signature = cutPreviewObjectSignature(root);
+  const cached = cutPreviewBrushCache.get(root);
+  if (cached?.signature === signature) {
+    cached.brush.matrixAutoUpdate = false;
+    cached.brush.matrix.copy(root.matrixWorld);
+    cached.brush.matrixWorld.copy(root.matrixWorld);
+    return cached.brush;
+  }
+
+  const positions: number[] = [];
+  const point = new THREE.Vector3();
+  const inverseRoot = root.matrixWorld.clone().invert();
+  root.traverse((child) => {
+    if (!(child instanceof THREE.Mesh) || !child.visible || !(child.geometry instanceof THREE.BufferGeometry)) {
+      return;
+    }
+
+    const position = child.geometry.getAttribute("position");
+    if (!position) {
+      return;
+    }
+    const index = child.geometry.getIndex();
+    const count = index?.count ?? position.count;
+    const relativeMatrix = inverseRoot.clone().multiply(child.matrixWorld);
+    const mirrored = relativeMatrix.determinant() < 0;
+    for (let offset = 0; offset + 2 < count; offset += 3) {
+      const triangle = [0, 1, 2].map((corner) => {
+        const vertexIndex = index ? index.getX(offset + corner) : offset + corner;
+        return point
+          .set(position.getX(vertexIndex), position.getY(vertexIndex), position.getZ(vertexIndex))
+          .applyMatrix4(relativeMatrix)
+          .toArray();
+      });
+      if (mirrored) {
+        [triangle[1], triangle[2]] = [triangle[2], triangle[1]];
+      }
+      positions.push(...triangle[0], ...triangle[1], ...triangle[2]);
+    }
+  });
+
+  if (positions.length < 9) {
+    return null;
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.computeVertexNormals();
+  const brush = new Brush(geometry);
+  brush.matrixAutoUpdate = false;
+  brush.matrix.copy(root.matrixWorld);
+  brush.matrixWorld.copy(root.matrixWorld);
+  if (cached) {
+    cached.brush.geometry.dispose();
+  }
+  cutPreviewBrushCache.set(root, { signature, brush });
+  return brush;
+}
+
+function cutPreviewActualIntersectionGeometry(state: ThreeState, solid: WorkplaneShape, hole: WorkplaneShape) {
+  const solidObject = findShapeObject(state, solid.id);
+  const holeObject = findShapeObject(state, hole.id);
+  if (!solidObject || !holeObject) {
+    return null;
+  }
+
+  const solidBrush = cutPreviewBrushFromObject(solidObject);
+  const holeBrush = cutPreviewBrushFromObject(holeObject);
+  if (!solidBrush || !holeBrush) {
+    return null;
+  }
+
+  try {
+    const result = cutPreviewEvaluator.evaluate(solidBrush, holeBrush, HOLLOW_INTERSECTION);
+    const position = result.geometry.getAttribute("position");
+    if (!position || position.count < 3) {
+      result.geometry.dispose();
+      return null;
+    }
+    const geometry = result.geometry.clone();
+    geometry.applyMatrix4(result.matrixWorld);
+    result.geometry.dispose();
+    geometry.computeVertexNormals();
+    return geometry;
+  } catch {
+    return null;
+  }
+}
+
+function addCutPreviewOverlays(state: ThreeState, holeFrame: CutPreviewShapeFrame, solidFrames: CutPreviewShapeFrame[]) {
+  solidFrames.forEach((solidFrame) => {
+    if (!holeFrame.worldBounds.intersectsBox(solidFrame.worldBounds)) {
+      return;
+    }
+
+    const geometry = cutPreviewActualIntersectionGeometry(state, solidFrame.shape, holeFrame.shape);
+    if (!geometry) {
+      return;
+    }
+    const preview = new THREE.Mesh(
+      geometry,
+      new THREE.MeshBasicMaterial({
+        color: "#30363a",
+        transparent: true,
+        opacity: 0.34,
+        depthTest: false,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      }),
+    );
+    preview.name = "CutPreviewOverlay";
+    preview.renderOrder = 18;
+    preview.userData.cutPreview = true;
+    preview.raycast = () => undefined;
+    state.shapeLayer.add(preview);
+  });
+}
+
+function clearCutPreviewOverlays(state: ThreeState) {
+  const overlays: THREE.Object3D[] = [];
+  state.shapeLayer.traverse((child) => {
+    if (child.userData.cutPreview) {
+      overlays.push(child);
+    }
+  });
+  overlays.forEach((overlay) => {
+    overlay.parent?.remove(overlay);
+    disposeObject(overlay);
+  });
+}
+
+function syncCutPreviewOverlays(state: ThreeState, shapes: WorkplaneShape[]) {
+  clearCutPreviewOverlays(state);
+  const visibleShapes = shapes.filter((shape) => !shape.hidden);
+  const cutFrames = shapeCutPreviewFrames(state, visibleShapes);
+  const solidFrames = visibleShapes
+    .filter((shape) => !shape.hole)
+    .map((shape) => cutFrames[shape.id])
+    .filter((frame): frame is CutPreviewShapeFrame => Boolean(frame));
+
+  if (solidFrames.length === 0) {
+    return;
+  }
+
+  visibleShapes.forEach((shape) => {
+    if (!shape.hole) {
+      return;
+    }
+    const holeFrame = cutFrames[shape.id];
+    if (holeFrame) {
+      addCutPreviewOverlays(state, holeFrame, solidFrames);
+    }
+  });
+}
+
+function rebuildShapes(state: ThreeState | null, shapes: WorkplaneShape[], selectedIds: string[], showCutPreviews = true) {
   if (!state) {
     return;
   }
@@ -2601,16 +3226,17 @@ function rebuildShapes(state: ThreeState | null, shapes: WorkplaneShape[], selec
   disposeChildren(state.shapeLayer);
 
   const selected = new Set(selectedIds);
-  shapes.forEach((shape) => {
-    if (shape.hidden) {
-      return;
-    }
+  const visibleShapes = shapes.filter((shape) => !shape.hidden);
+  visibleShapes.forEach((shape) => {
     const object = createShapeObject(shape, selected.has(shape.id), () => {
       state.needsRender = true;
     });
     state.shapeLayer.add(object);
 
   });
+  if (showCutPreviews) {
+    syncCutPreviewOverlays(state, visibleShapes);
+  }
 
   rebuildSelectionHelpers(state, shapes, selectedIds);
 }

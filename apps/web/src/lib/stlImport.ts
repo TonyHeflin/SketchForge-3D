@@ -4,10 +4,20 @@ import { createLocalId } from "@/lib/localIds";
 import type { WorkplaneShape } from "@/types/sketchforge";
 
 const stlLoader = new STLLoader();
+const SUPPORTED_IMPORT_EXTENSIONS = new Set(["stl"]);
 
-export function importedShapeFromStl(fileName: string, buffer: ArrayBuffer): WorkplaneShape {
-  const rawGeometry = stlLoader.parse(buffer);
-  const geometry = rawGeometry.index ? rawGeometry.toNonIndexed() : rawGeometry.clone();
+function fileExtension(fileName: string) {
+  return fileName.split(".").pop()?.toLowerCase() ?? "";
+}
+
+function importedShapeFromTriangleSoup(fileName: string, rawPositions: number[], rawNormals: number[] | undefined): WorkplaneShape {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(rawPositions, 3));
+  if (rawNormals?.length === rawPositions.length) {
+    geometry.setAttribute("normal", new THREE.Float32BufferAttribute(rawNormals, 3));
+  } else {
+    geometry.computeVertexNormals();
+  }
   geometry.computeBoundingBox();
 
   const box = geometry.boundingBox;
@@ -69,4 +79,26 @@ export function importedShapeFromStl(fileName: string, buffer: ArrayBuffer): Wor
     locked: false,
     hidden: false,
   };
+}
+
+export function importExtensionSupported(fileName: string) {
+  return SUPPORTED_IMPORT_EXTENSIONS.has(fileExtension(fileName));
+}
+
+export function importedShapeFromStl(fileName: string, buffer: ArrayBuffer): WorkplaneShape {
+  const rawGeometry = stlLoader.parse(buffer);
+  const geometry = rawGeometry.index ? rawGeometry.toNonIndexed() : rawGeometry.clone();
+  const position = geometry.getAttribute("position");
+  const normal = geometry.getAttribute("normal");
+  const rawPositions: number[] = [];
+  const rawNormals: number[] = [];
+
+  for (let i = 0; i < position.count; i += 1) {
+    rawPositions.push(position.getX(i), position.getY(i), position.getZ(i));
+    if (normal) {
+      rawNormals.push(normal.getX(i), normal.getY(i), normal.getZ(i));
+    }
+  }
+
+  return importedShapeFromTriangleSoup(fileName, rawPositions, rawNormals.length ? rawNormals : undefined);
 }

@@ -23,22 +23,22 @@ import {
   ToolbarCaretDownIcon,
   ToolbarCopyIcon,
   ToolbarDuplicateIcon,
+  ToolbarDropToWorkplaneIcon,
   ToolbarExportIcon,
   ToolbarGroupIcon,
   ToolbarHideSelectedIcon,
   ToolbarImportIcon,
-  ToolbarMagnetIcon,
   ToolbarMirrorIcon,
   ToolbarPasteIcon,
   ToolbarRedoIcon,
-  ToolbarBringForwardIcon,
-  ToolbarSendBackwardIcon,
+  ToolbarSnapGridIcon,
   ToolbarSettingsIcon,
   ToolbarShapeAddIcon,
   ToolbarTrashIcon,
   ToolbarUngroupIcon,
   ToolbarUndoIcon,
   ToolbarVectorExportIcon,
+  ToolbarWorkplaneIcon,
 } from "./icons";
 import { WorkplaneViewport } from "./WorkplaneViewport";
 import {
@@ -56,7 +56,7 @@ import {
 } from "@/lib/workplaneShapes";
 import { createLocalId } from "@/lib/localIds";
 import { makeShapeFromAsset, sceneShape, toolbarShapeAssets, type ToolbarShapeAsset } from "@/lib/shapeCatalog";
-import { importedShapeFromStl } from "@/lib/stlImport";
+import { importedShapeFromStl, importExtensionSupported } from "@/lib/stlImport";
 import type { AlignAxis, AlignHandleStatus, AlignTarget, GridSize, ShapeAsset, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
 export { importedShapeFromStl };
@@ -4833,8 +4833,7 @@ export function SketchForgeEditor({
   }, [commitShapes, shapes]);
 
   const selectFile = useCallback(async (file: File) => {
-    const extension = file.name.split(".").pop()?.toLowerCase();
-    if (extension !== "stl") {
+    if (!importExtensionSupported(file.name)) {
       setNotice("Unsupported file type. Use STL.");
       return;
     }
@@ -5311,9 +5310,9 @@ function SecondaryToolbar({
     { label: "Ungroup", icon: ToolbarUngroupIcon, action: onUngroup, enabled: canUngroup },
     { label: "Align", icon: ToolbarAlignIcon, action: onAlign, enabled: canAlign, active: alignMode },
     { label: "Mirror", icon: ToolbarMirrorIcon, action: onMirror, enabled: hasSelection, active: mirrorMode },
-    { label: "Snap to grid", icon: ToolbarMagnetIcon, action: onSnap, enabled: hasSelection },
-    { label: "Workplane", icon: ToolbarSendBackwardIcon, action: onWorkplaneTool, enabled: true, active: workplaneMode },
-    { label: "Drop to workplane", icon: ToolbarBringForwardIcon, action: onDropToWorkplane, enabled: hasSelection },
+    { label: "Snap to grid", icon: ToolbarSnapGridIcon, action: onSnap, enabled: hasSelection },
+    { label: "Workplane", icon: ToolbarWorkplaneIcon, action: onWorkplaneTool, enabled: true, active: workplaneMode },
+    { label: "Drop to workplane", icon: ToolbarDropToWorkplaneIcon, action: onDropToWorkplane, enabled: hasSelection },
   ];
   const renderToolButton = (tool: (typeof leftTools)[number] | (typeof rightTools)[number]) => {
     const { icon: Icon, action, enabled, label } = tool;
