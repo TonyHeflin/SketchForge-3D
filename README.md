@@ -37,6 +37,7 @@ No login. No server project storage. No heavyweight CAD install just to make a u
 - **Real 3D workplane** - grid, camera controls, snap settings, transform handles, outlines, and inspector controls.
 - **Primitive shape library** - boxes, cylinders, spheres, cones, pyramids, wedges, text, roofs, half spheres, torus shapes, tubes, and more.
 - **Solid and hole workflow** - turn shapes into cutters and group them into final geometry.
+- **Boolean Intersection** - keep only the geometry where selected solid and hole shapes overlap.
 - **STL import** - bring outside models into the same workspace as primitives.
 - **STL and OBJ export** - export selected objects or the whole scene.
 - **Fast browser stack** - Next.js, React, TypeScript, Three.js, and Manifold/CSG geometry tooling.

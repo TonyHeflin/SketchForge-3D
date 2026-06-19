@@ -1,10 +1,10 @@
 "use client";
 
-import { Download, Home, Menu, Settings, UserRoundPlus, X } from "lucide-react";
+import { Download, X } from "lucide-react";
 import type manifoldModule from "manifold-3d";
 import type { ManifoldToplevel } from "manifold-3d";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ADDITION, Brush, Evaluator, HOLLOW_SUBTRACTION, SUBTRACTION, type CSGOperation } from "three-bvh-csg";
+import { ADDITION, Brush, Evaluator, HOLLOW_INTERSECTION, HOLLOW_SUBTRACTION, INTERSECTION, SUBTRACTION, type CSGOperation } from "three-bvh-csg";
 import * as THREE from "three";
 import { TextGeometry } from "three/examples/jsm/geometries/TextGeometry.js";
 import { FontLoader, type Font, type FontData } from "three/examples/jsm/loaders/FontLoader.js";
@@ -18,7 +18,6 @@ import optimerBoldFontJson from "three/examples/fonts/optimer_bold.typeface.json
 import { manifoldModuleSource } from "@/generated/manifoldModuleSource";
 import { manifoldWasmBase64 } from "@/generated/manifoldWasmBase64";
 import {
-  GridModeIcon,
   ToolbarAlignIcon,
   ToolbarCaretDownIcon,
   ToolbarCopyIcon,
@@ -27,7 +26,9 @@ import {
   ToolbarExportIcon,
   ToolbarGroupIcon,
   ToolbarHideSelectedIcon,
+  ToolbarHomeIcon,
   ToolbarImportIcon,
+  ToolbarIntersectionIcon,
   ToolbarMirrorIcon,
   ToolbarPasteIcon,
   ToolbarRedoIcon,
@@ -76,6 +77,15 @@ type GroupBuildResult = {
   hasHole: boolean;
   hasImportedMesh: boolean;
   consumed: boolean;
+  failureNotice: string;
+};
+type IntersectionAttempt =
+  | { status: "success"; group: WorkplaneShape }
+  | { status: "empty" }
+  | { status: "unsupported" };
+type IntersectionBuildResult = {
+  group: WorkplaneShape | null;
+  empty: boolean;
   failureNotice: string;
 };
 type BooleanAutomationMode = "before" | "after" | "ungroup";
@@ -3127,6 +3137,146 @@ async function manifoldUnionMeshShape(selection: WorkplaneShape[]): Promise<Work
   }
 }
 
+function asIntersectionGroup(group: WorkplaneShape): WorkplaneShape {
+  return {
+    ...group,
+    name: "Intersection",
+    hole: false,
+  };
+}
+
+async function manifoldIntersectionMeshShape(selection: WorkplaneShape[]): Promise<IntersectionAttempt> {
+  const solids = selection.filter((shape) => !shape.hole && !shape.locked);
+  const holes = selection.filter((shape) => shape.hole && !shape.locked);
+  if (solids.length === 0 || holes.length === 0) {
+    return { status: "unsupported" };
+  }
+
+  const sourceTriangleCount = selection.reduce((total, shape) => total + meshForShape(shape).faces.length, 0);
+  if (sourceTriangleCount > IMPORTED_EXACT_BOOLEAN_TRIANGLE_LIMIT) {
+    return { status: "unsupported" };
+  }
+
+  const created: ManifoldSolid[] = [];
+  try {
+    const runtime = await getManifoldRuntime();
+    const solid = shapesToManifoldUnion(runtime, solids, created, true);
+    const hole = shapesToManifoldUnion(runtime, holes, created, true);
+    if (!solid || !hole) {
+      return { status: "unsupported" };
+    }
+
+    const result = solid.intersect(hole);
+    created.push(result);
+    if (result.status() !== "NoError") {
+      return { status: "unsupported" };
+    }
+    if (result.numTri() < 1) {
+      return { status: "empty" };
+    }
+
+    const outputMesh = result.getMesh();
+    const positions = manifoldMeshToPositions(outputMesh);
+    const group = meshPositionsToGroupShape(selection, solids, positions, "grouped-manifold-intersection");
+    return group && isUsableBooleanGroup(group, sourceTriangleCount, false)
+      ? { status: "success", group: asIntersectionGroup(group) }
+      : { status: "unsupported" };
+  } catch {
+    return { status: "unsupported" };
+  } finally {
+    Array.from(new Set(created)).forEach(disposeManifold);
+  }
+}
+
+function bvhIntersectionMeshShape(selection: WorkplaneShape[], operation: CSGOperation, idPrefix: string): IntersectionAttempt {
+  const solids = selection.filter((shape) => !shape.hole && !shape.locked);
+  const holes = selection.filter((shape) => shape.hole && !shape.locked);
+  if (solids.length === 0 || holes.length === 0) {
+    return { status: "unsupported" };
+  }
+
+  try {
+    const evaluator = new Evaluator();
+    evaluator.useGroups = false;
+    evaluator.attributes = ["position", "normal"];
+    (evaluator as Evaluator & { useCDTClipping: boolean }).useCDTClipping = true;
+
+    let solidResult = brushFromShape(solids[0]);
+    solids.slice(1).forEach((solid) => {
+      solidResult = evaluator.evaluate(solidResult, brushFromShape(solid), ADDITION);
+      solidResult.updateMatrixWorld(true);
+    });
+
+    let holeResult = brushFromShape(holes[0]);
+    holes.slice(1).forEach((hole) => {
+      holeResult = evaluator.evaluate(holeResult, brushFromShape(hole), ADDITION);
+      holeResult.updateMatrixWorld(true);
+    });
+
+    const result = evaluator.evaluate(solidResult, holeResult, operation);
+    result.updateMatrixWorld(true);
+    if (positionsFromGeometryDrawRange(result.geometry).length < 9) {
+      return { status: "empty" };
+    }
+
+    const sourceTriangleCount = solids.reduce((total, solid) => total + meshForShape(solid).faces.length, 0);
+    const group = resultGeometryToMeshShape(selection, solids, result.geometry, idPrefix);
+    return group && isUsableBooleanGroup(group, sourceTriangleCount, false)
+      ? { status: "success", group: asIntersectionGroup(group) }
+      : { status: "unsupported" };
+  } catch {
+    return { status: "unsupported" };
+  }
+}
+
+async function buildIntersectionShapeFromSelection(groupable: WorkplaneShape[]): Promise<IntersectionBuildResult> {
+  const booleanSelection = expandGroupsForBoolean(groupable);
+  const solids = booleanSelection.filter((shape) => !shape.hole && !shape.locked);
+  const holes = booleanSelection.filter((shape) => shape.hole && !shape.locked);
+  if (solids.length === 0 || holes.length === 0) {
+    return {
+      group: null,
+      empty: false,
+      failureNotice: "Select at least one solid and one hole for Intersection",
+    };
+  }
+
+  if (!hasSolidHoleOverlap(solids, holes)) {
+    return { group: null, empty: true, failureNotice: "" };
+  }
+
+  const manifoldAttempt = await manifoldIntersectionMeshShape(booleanSelection);
+  if (manifoldAttempt.status === "success") {
+    return { group: manifoldAttempt.group, empty: false, failureNotice: "" };
+  }
+  if (manifoldAttempt.status === "empty") {
+    return { group: null, empty: true, failureNotice: "" };
+  }
+
+  const exactAttempt = bvhIntersectionMeshShape(booleanSelection, INTERSECTION, "grouped-intersection");
+  if (exactAttempt.status === "success") {
+    return { group: exactAttempt.group, empty: false, failureNotice: "" };
+  }
+  const hasImportedMesh = booleanSelection.some((shape) => Boolean(shape.importedMesh));
+  if (exactAttempt.status === "empty" && !hasImportedMesh) {
+    return { group: null, empty: true, failureNotice: "" };
+  }
+
+  const hollowAttempt = bvhIntersectionMeshShape(booleanSelection, HOLLOW_INTERSECTION, "grouped-hollow-intersection");
+  if (hollowAttempt.status === "success") {
+    return { group: hollowAttempt.group, empty: false, failureNotice: "" };
+  }
+  if (hollowAttempt.status === "empty" || exactAttempt.status === "empty") {
+    return { group: null, empty: true, failureNotice: "" };
+  }
+
+  return {
+    group: null,
+    empty: false,
+    failureNotice: "Could not calculate this Intersection cleanly",
+  };
+}
+
 function cutterInteriorTriangleCount(mesh: MeshData, cutters: WorkplaneShape[]) {
   return mesh.faces.reduce((total, [ai, bi, ci]) => {
     const centroid = triangleCentroid([mesh.vertices[ai], mesh.vertices[bi], mesh.vertices[ci]]);
@@ -4585,6 +4735,35 @@ export function SketchForgeEditor({
     commitShapes([...shapes.filter((shape) => !selected.has(shape.id)), group], group.id, `Grouped ${selectedShapes.length} shapes`);
   }, [commitShapes, selectedIds, selectedShapes, shapes]);
 
+  const intersectSelected = useCallback(async () => {
+    const groupable = selectedShapes.filter((shape) => !shape.locked);
+    const hasSolid = groupable.some((shape) => !shape.hole);
+    const hasHole = groupable.some((shape) => shape.hole);
+    if (!hasSolid || !hasHole) {
+      setNotice("Select at least one solid and one hole for Intersection");
+      return;
+    }
+
+    const result = await buildIntersectionShapeFromSelection(groupable);
+    if (!result.group && !result.empty) {
+      setNotice(result.failureNotice);
+      return;
+    }
+
+    const operandIds = new Set(groupable.map((shape) => shape.id));
+    const remainingShapes = shapes.filter((shape) => !operandIds.has(shape.id));
+    if (result.empty) {
+      commitShapes(remainingShapes, null, "Intersection is empty");
+      return;
+    }
+
+    const intersection = result.group;
+    if (!intersection) {
+      return;
+    }
+    commitShapes([...remainingShapes, intersection], intersection.id, `Intersected ${groupable.length} shapes`);
+  }, [commitShapes, selectedShapes, shapes]);
+
   const ungroupSelected = useCallback(() => {
     const groups = selectedShapes.filter((shape) => shape.groupedShapes?.length);
     if (groups.length === 0) {
@@ -5065,6 +5244,7 @@ export function SketchForgeEditor({
         canUndo={historyIndex > 0}
         canRedo={historyIndex < history.length - 1}
         canGroup={selectedShapes.length > 1}
+        canIntersect={selectedShapes.some((shape) => !shape.locked && !shape.hole) && selectedShapes.some((shape) => !shape.locked && Boolean(shape.hole))}
         canUngroup={selectedShapes.some((shape) => Boolean(shape.groupedShapes?.length))}
         hasClipboard={clipboard.length > 0}
         hasSelection={hasSelection}
@@ -5078,6 +5258,7 @@ export function SketchForgeEditor({
         onDuplicate={duplicateSelected}
         onDropToWorkplane={dropSelectedToWorkplane}
         onGroup={groupSelected}
+        onIntersect={intersectSelected}
         onMirror={toggleMirrorMode}
         onPaste={pasteShape}
         onRedo={redo}
@@ -5169,70 +5350,11 @@ export function SketchForgeEditor({
   );
 }
 
-function TopNavigation({
-  activeMode,
-  menuOpen,
-  onMakeCopy,
-  onMenuToggle,
-  onModeChange,
-  onNewDesign,
-  onProfile,
-  onSave,
-  onSettings,
-}: {
-  activeMode: string;
-  menuOpen: boolean;
-  onMakeCopy: () => void;
-  onMenuToggle: () => void;
-  onModeChange: (mode: string) => void;
-  onNewDesign: () => void;
-  onProfile: () => void;
-  onSave: () => void;
-  onSettings: () => void;
-}) {
-  const modes = [
-    { name: "3D Design", icon: GridModeIcon },
-  ];
-
-  return (
-    <nav className="top-nav">
-      <a className="sf-logo" aria-label="SketchForge dashboard">
-        <img src="assets/sketchforge/sketchforge-logo.png" alt="" />
-      </a>
-      <button className="nav-icon menu-button" aria-label="Menu" onClick={onMenuToggle}>
-        <Menu size={27} strokeWidth={2.2} />
-      </button>
-      {menuOpen ? (
-        <div className="top-dropdown app-menu">
-          <button onClick={onNewDesign}>New design</button>
-          <button onClick={onSave}>Save</button>
-          <button onClick={onMakeCopy}>Make a copy</button>
-          <button onClick={onSettings}>
-            <Settings size={16} />
-            Settings
-          </button>
-        </div>
-      ) : null}
-      <div className="nav-spacer" />
-      <div className="mode-tabs">
-        {modes.map(({ name, icon: Icon }) => (
-          <button key={name} className={`mode-tab ${activeMode === name ? "active" : ""}`} aria-label={name} onClick={() => onModeChange(name)}>
-            <Icon />
-          </button>
-        ))}
-      </div>
-      <button className="nav-icon collaborator" aria-label="Invite" onClick={onSettings}>
-        <UserRoundPlus size={34} strokeWidth={1.8} />
-      </button>
-      <button className="avatar" aria-label="Profile" onClick={onProfile} />
-    </nav>
-  );
-}
-
 function SecondaryToolbar({
   alignMode,
   canAlign,
   canGroup,
+  canIntersect,
   canRedo,
   canUngroup,
   canUndo,
@@ -5246,6 +5368,7 @@ function SecondaryToolbar({
   onDuplicate,
   onDropToWorkplane,
   onGroup,
+  onIntersect,
   onMirror,
   onPaste,
   onRedo,
@@ -5262,6 +5385,7 @@ function SecondaryToolbar({
   alignMode: boolean;
   canAlign: boolean;
   canGroup: boolean;
+  canIntersect: boolean;
   canRedo: boolean;
   canUngroup: boolean;
   canUndo: boolean;
@@ -5275,6 +5399,7 @@ function SecondaryToolbar({
   onDuplicate: () => void;
   onDropToWorkplane: () => void;
   onGroup: () => void;
+  onIntersect: () => void;
   onMirror: () => void;
   onPaste: () => void;
   onRedo: () => void;
@@ -5308,6 +5433,7 @@ function SecondaryToolbar({
     { label: "Visibility options", icon: ToolbarCaretDownIcon, action: onTips, enabled: hasSelection },
     { label: "Group", icon: ToolbarGroupIcon, action: onGroup, enabled: canGroup },
     { label: "Ungroup", icon: ToolbarUngroupIcon, action: onUngroup, enabled: canUngroup },
+    { label: "Boolean Intersection", icon: ToolbarIntersectionIcon, action: onIntersect, enabled: canIntersect },
     { label: "Align", icon: ToolbarAlignIcon, action: onAlign, enabled: canAlign, active: alignMode },
     { label: "Mirror", icon: ToolbarMirrorIcon, action: onMirror, enabled: hasSelection, active: mirrorMode },
     { label: "Snap to grid", icon: ToolbarSnapGridIcon, action: onSnap, enabled: hasSelection },
@@ -5332,7 +5458,7 @@ function SecondaryToolbar({
             <div className="toolbar-section-label">Home</div>
             <div className="toolbar-section-tools">
               <button className="toolbar-icon editor-home-control" aria-label="Home dashboard" title="Home dashboard" onClick={onHome}>
-                <Home size={25} strokeWidth={2.4} />
+                <ToolbarHomeIcon />
               </button>
             </div>
           </div>
@@ -5439,15 +5565,15 @@ function SecondaryToolbar({
         </div>
         <div className="toolbar-section">
           <div className="toolbar-section-label">Combine</div>
-          <div className="toolbar-section-tools">{rightTools.slice(2, 4).map(renderToolButton)}</div>
+          <div className="toolbar-section-tools">{rightTools.slice(2, 5).map(renderToolButton)}</div>
         </div>
         <div className="toolbar-section">
           <div className="toolbar-section-label">Modify</div>
-          <div className="toolbar-section-tools">{rightTools.slice(4, 7).map(renderToolButton)}</div>
+          <div className="toolbar-section-tools">{rightTools.slice(5, 8).map(renderToolButton)}</div>
         </div>
         <div className="toolbar-section">
           <div className="toolbar-section-label">Arrange</div>
-          <div className="toolbar-section-tools">{rightTools.slice(7).map(renderToolButton)}</div>
+          <div className="toolbar-section-tools">{rightTools.slice(8).map(renderToolButton)}</div>
         </div>
       </div>
       <div className="toolbar-section toolbar-actions-section">

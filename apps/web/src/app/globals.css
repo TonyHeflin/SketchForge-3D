@@ -992,10 +992,58 @@ button {
 }
 
 .toolbar-command-icon {
+  --toolbar-art-offset-y: 0%;
   display: block;
   object-fit: contain;
   opacity: 0.96;
+  transform: translateY(var(--toolbar-art-offset-y));
   transition: filter 120ms ease, opacity 120ms ease;
+}
+
+.toolbar-art-toolbar-home,
+.toolbar-art-toolbar-delete {
+  --toolbar-art-offset-y: -5.25%;
+}
+
+.toolbar-art-toolbar-copy {
+  --toolbar-art-offset-y: -6.6%;
+}
+
+.toolbar-art-toolbar-paste,
+.toolbar-art-toolbar-mirror,
+.toolbar-art-toolbar-drop-workplane {
+  --toolbar-art-offset-y: -2.4%;
+}
+
+.toolbar-art-toolbar-duplicate {
+  --toolbar-art-offset-y: -7.1%;
+}
+
+.toolbar-art-toolbar-undo,
+.toolbar-art-toolbar-redo {
+  --toolbar-art-offset-y: -8.95%;
+}
+
+.toolbar-art-toolbar-snap-grid {
+  --toolbar-art-offset-y: -4.2%;
+}
+
+.toolbar-art-toolbar-workplane {
+  --toolbar-art-offset-y: -10%;
+}
+
+.toolbar-art-toolbar-import,
+.toolbar-art-toolbar-export {
+  --toolbar-art-offset-y: -0.8%;
+}
+
+.toolbar-art-toolbar-settings {
+  --toolbar-art-offset-y: -3.7%;
+}
+
+.toolbar-icon .toolbar-user-art-icon {
+  width: 40px;
+  height: 40px;
 }
 
 .toolbar-icon.disabled .toolbar-command-icon {
@@ -1236,6 +1284,17 @@ button {
   height: 32px;
 }
 
+.action-buttons .action-icon-button .toolbar-command-icon {
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
+}
+
+.action-buttons .action-icon-button .toolbar-user-art-icon {
+  width: 40px;
+  height: 40px;
+}
+
 .top-dropdown {
   position: fixed;
   top: 76px;
@@ -1343,9 +1402,11 @@ button {
 }
 
 .top-action-body button svg,
-.top-action-body button .vector-toolbar-sprite-icon {
+.top-action-body button .vector-toolbar-sprite-icon,
+.top-action-body button .toolbar-command-icon {
   width: 20px;
   height: 20px;
+  object-fit: contain;
 }
 
 .top-action-body .import-drop-zone {
@@ -1372,9 +1433,11 @@ button {
   color: #244057;
 }
 
-.import-drop-zone .vector-toolbar-sprite-icon {
+.import-drop-zone .vector-toolbar-sprite-icon,
+.import-drop-zone .toolbar-command-icon {
   width: 30px;
   height: 30px;
+  object-fit: contain;
 }
 
 .import-drop-zone strong {
@@ -2824,31 +2887,6 @@ button {
   overflow: hidden;
   background: var(--panel);
   border-left: 1px solid #eef1f4;
-}
-
-.sidebar-tools {
-  display: grid;
-  height: 72px;
-  grid-template-columns: repeat(3, 1fr);
-}
-
-.sidebar-tool {
-  display: grid;
-  place-items: center;
-  color: var(--primary);
-  background: transparent;
-  cursor: pointer;
-}
-
-.sidebar-tool svg,
-.sidebar-tool .toolbar-command-icon {
-  width: 58px;
-  height: 58px;
-  object-fit: contain;
-}
-
-.sidebar-tool:hover {
-  background: #eef8fc;
 }
 
 .category-row {
