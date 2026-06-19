@@ -28,6 +28,7 @@ export type ShapeAsset = {
 };
 
 export type GridSize = "Off" | "0.1 mm" | "0.25 mm" | "0.5 mm" | "1.0 mm" | "2.0 mm" | "5.0 mm" | "Brick";
+export type MeasurementAccuracy = 1 | 2 | 3;
 
 export type WorkplaneWorkspaceSettings = {
   width: number;
@@ -42,6 +43,7 @@ export type WorkplaneWorkspaceSettings = {
   zoomSpeed: number;
   units: string;
   scale: string;
+  accuracy: MeasurementAccuracy;
 };
 
 export type AlignAxis = "x" | "y" | "z";

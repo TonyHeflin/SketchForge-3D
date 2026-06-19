@@ -34,16 +34,18 @@ import {
   type TransformHandleKind,
   type TransformOverlayState,
 } from "@/components/workplane/TransformOverlay";
-import type { AlignAxis, AlignHandleStatus, AlignTarget, GridSize, ShapeAsset, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
+import type { AlignAxis, AlignHandleStatus, AlignTarget, GridSize, MeasurementAccuracy, ShapeAsset, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
 const WORKPLANE_WIDTH = 200;
 const WORKPLANE_DEPTH = 140;
 const MIN_GRID_BLOCK_SIZE = 1;
 const MAX_GRID_BLOCK_SIZE = 200;
+const WORKSPACE_DEFAULTS_STORAGE_PREFIX = "sketchForge.workspaceDefault.";
 const DEFAULT_WORKSPACE = DEFAULT_WORKPLANE_WORKSPACE;
 const CAMERA_HOME = new THREE.Vector3(118, 96, 118);
 const CAMERA_TARGET = new THREE.Vector3(0, 0, 0);
 const MIN_SHAPE_SIZE = 0.01;
+const CUT_PREVIEW_PADDING = 0.01;
 const MIN_ELEVATION = -180;
 const MAX_ELEVATION = 220;
 const CAMERA_MIN_TARGET_Y = -70;
@@ -146,6 +148,27 @@ type WorkplaneViewportProps = {
 };
 
 type WorkspaceSettings = WorkplaneWorkspaceSettings;
+
+function readSavedWorkspaceDefault(key: string | null) {
+  if (!key || typeof window === "undefined") {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(`${WORKSPACE_DEFAULTS_STORAGE_PREFIX}${key}`) ?? "null") as {
+      workspace?: unknown;
+      snap?: unknown;
+    } | null;
+    if (!parsed) {
+      return null;
+    }
+    return {
+      workspace: normalizeWorkspaceSettings(parsed.workspace),
+      snap: normalizeSnapGrid(parsed.snap, DEFAULT_SNAP_GRID),
+    };
+  } catch {
+    return null;
+  }
+}
 
 type ThreeState = {
   renderer: THREE.WebGLRenderer;
@@ -494,6 +517,7 @@ function syncRulerOverlay(
   model: RulerModel,
   overlayRef: MutableRefObject<RulerOverlayState | null>,
   setOverlay: Dispatch<SetStateAction<RulerOverlayState | null>>,
+  accuracy: MeasurementAccuracy,
 ) {
   const projectedPoints = new Map<string, { screenX: number; screenY: number }>();
   const points = model.points.map((point) => {
@@ -519,7 +543,7 @@ function syncRulerOverlay(
         y2: endScreen.screenY,
         labelX: (startScreen.screenX + endScreen.screenX) / 2,
         labelY: (startScreen.screenY + endScreen.screenY) / 2 - 18,
-        label: formatMeasure(Math.hypot(end.x - start.x, end.z - start.z)),
+        label: formatMeasure(Math.hypot(end.x - start.x, end.z - start.z), accuracy),
       },
     ];
   });
@@ -1165,8 +1189,10 @@ export function WorkplaneViewport({
       workspaceSettingsKeyRef.current = nextKey;
       lastWorkspaceSettingsSyncRef.current = "";
     }
-    setSnap(normalizeSnapGrid(initialSnap, DEFAULT_SNAP_GRID));
-    setWorkspace(normalizeWorkspaceSettings(initialWorkspace));
+    const shouldUseSavedDefault = nextKey === "local-workplane" || (initialSnap === undefined && initialWorkspace === undefined);
+    const savedDefault = shouldUseSavedDefault ? readSavedWorkspaceDefault(nextKey) : null;
+    setSnap(savedDefault?.snap ?? normalizeSnapGrid(initialSnap, DEFAULT_SNAP_GRID));
+    setWorkspace(savedDefault?.workspace ?? normalizeWorkspaceSettings(initialWorkspace));
   }, [initialSnap, initialWorkspace, workspaceSettingsKey]);
 
   useEffect(() => {
@@ -1180,6 +1206,23 @@ export function WorkplaneViewport({
     onWorkspaceSettingsChange?.({ workspace: normalizedWorkspace, snap: normalizedSnap });
   }, [onWorkspaceSettingsChange, snap, workspace]);
 
+  const makeWorkspaceDefault = useCallback(() => {
+    const normalizedWorkspace = normalizeWorkspaceSettings(workspace);
+    const normalizedSnap = normalizeSnapGrid(snap, DEFAULT_SNAP_GRID);
+    const key = workspaceSettingsKeyRef.current;
+    if (key) {
+      try {
+        window.localStorage.setItem(
+          `${WORKSPACE_DEFAULTS_STORAGE_PREFIX}${key}`,
+          JSON.stringify({ workspace: normalizedWorkspace, snap: normalizedSnap }),
+        );
+      } catch {
+        // Project persistence below is still attempted if browser storage is unavailable.
+      }
+    }
+    onWorkspaceSettingsChange?.({ workspace: normalizedWorkspace, snap: normalizedSnap });
+  }, [onWorkspaceSettingsChange, snap, workspace]);
+
   useEffect(() => {
     const openWorkspaceSettings = () => setSettingsOpen(true);
     window.addEventListener("sketchforge:open-workspace-settings", openWorkspaceSettings);
@@ -1190,7 +1233,15 @@ export function WorkplaneViewport({
     shapesRef.current = shapes;
     rebuildShapes(threeRef.current, shapes, selectedIdsRef.current, !transformRef.current && !dragRef.current);
     if (threeRef.current) {
-      syncTransformOverlay(threeRef.current, shapes, selectedIdsRef.current, transformOverlayRef, setTransformOverlay, Boolean(transformRef.current || dragRef.current));
+      syncTransformOverlay(
+        threeRef.current,
+        shapes,
+        selectedIdsRef.current,
+        transformOverlayRef,
+        setTransformOverlay,
+        workspaceRef.current.accuracy,
+        Boolean(transformRef.current || dragRef.current),
+      );
       syncAlignOverlay(threeRef.current, alignReferenceShapesRef.current, selectedIdsRef.current, alignModeRef.current, alignAnchorIdRef.current, alignHandlesRef.current, alignOverlayRef, setAlignOverlay);
       syncMirrorOverlay(threeRef.current, mirrorReferenceShapesRef.current, selectedIdsRef.current, mirrorModeRef.current, mirrorOverlayRef, setMirrorOverlay);
       threeRef.current.needsRender = true;
@@ -1229,7 +1280,15 @@ export function WorkplaneViewport({
     selectedIdsRef.current = selectedIds;
     rebuildShapes(threeRef.current, shapesRef.current, selectedIds, !transformRef.current && !dragRef.current);
     if (threeRef.current) {
-      syncTransformOverlay(threeRef.current, shapesRef.current, selectedIds, transformOverlayRef, setTransformOverlay, Boolean(transformRef.current || dragRef.current));
+      syncTransformOverlay(
+        threeRef.current,
+        shapesRef.current,
+        selectedIds,
+        transformOverlayRef,
+        setTransformOverlay,
+        workspaceRef.current.accuracy,
+        Boolean(transformRef.current || dragRef.current),
+      );
       syncAlignOverlay(threeRef.current, alignReferenceShapesRef.current, selectedIds, alignModeRef.current, alignAnchorIdRef.current, alignHandlesRef.current, alignOverlayRef, setAlignOverlay);
       syncMirrorOverlay(threeRef.current, mirrorReferenceShapesRef.current, selectedIds, mirrorModeRef.current, mirrorOverlayRef, setMirrorOverlay);
       threeRef.current.needsRender = true;
@@ -1265,7 +1324,7 @@ export function WorkplaneViewport({
   useEffect(() => {
     rulerModelRef.current = rulerModel;
     if (threeRef.current) {
-      syncRulerOverlay(threeRef.current, rulerModel, rulerOverlayRef, setRulerOverlay);
+      syncRulerOverlay(threeRef.current, rulerModel, rulerOverlayRef, setRulerOverlay, workspaceRef.current.accuracy);
       threeRef.current.needsRender = true;
     }
   }, [rulerModel]);
@@ -1282,6 +1341,16 @@ export function WorkplaneViewport({
     workspaceRef.current = workspace;
     rebuildWorkplane(threeRef.current, workspace);
     if (threeRef.current) {
+      syncTransformOverlay(
+        threeRef.current,
+        shapesRef.current,
+        selectedIdsRef.current,
+        transformOverlayRef,
+        setTransformOverlay,
+        workspace.accuracy,
+        Boolean(transformRef.current || dragRef.current),
+      );
+      syncRulerOverlay(threeRef.current, rulerModelRef.current, rulerOverlayRef, setRulerOverlay, workspace.accuracy);
       threeRef.current.needsRender = true;
     }
   }, [workspace]);
@@ -1333,11 +1402,12 @@ export function WorkplaneViewport({
           selectedIdsRef.current,
           transformOverlayRef,
           setTransformOverlay,
+          workspaceRef.current.accuracy,
           Boolean(transformRef.current || dragRef.current),
         );
         syncAlignOverlay(state, alignReferenceShapesRef.current, selectedIdsRef.current, alignModeRef.current, alignAnchorIdRef.current, alignHandlesRef.current, alignOverlayRef, setAlignOverlay);
         syncMirrorOverlay(state, mirrorReferenceShapesRef.current, selectedIdsRef.current, mirrorModeRef.current, mirrorOverlayRef, setMirrorOverlay);
-        syncRulerOverlay(state, rulerModelRef.current, rulerOverlayRef, setRulerOverlay);
+        syncRulerOverlay(state, rulerModelRef.current, rulerOverlayRef, setRulerOverlay, workspaceRef.current.accuracy);
         state.lastOverlaySync = now;
       }
       const renderStart = performance.now();
@@ -1732,7 +1802,7 @@ export function WorkplaneViewport({
         setRotationReadout({
           x: event.clientX - renderRect.left + 22,
           y: event.clientY - renderRect.top - 34,
-          text: formatMeasure(yBounds.min),
+          text: formatMeasure(yBounds.min, workspaceRef.current.accuracy),
         });
       } else {
         setRotationReadout(null);
@@ -1818,7 +1888,7 @@ export function WorkplaneViewport({
           setRotationReadout({
             x: readoutPoint.x + 28,
             y: readoutPoint.y - 30,
-            text: formatMeasure(nextBottom),
+            text: formatMeasure(nextBottom, workspaceRef.current.accuracy),
           });
         }
         return true;
@@ -1964,7 +2034,7 @@ export function WorkplaneViewport({
       axis: "elevation",
       x: clamp(editX, 44, Math.max(44, (transformOverlayRef.current?.width ?? 900) - 44)),
       y: clamp(editY, 34, Math.max(34, (transformOverlayRef.current?.height ?? 600) - 34)),
-      value: formatMeasure(yBounds.min),
+      value: formatMeasure(yBounds.min, workspaceRef.current.accuracy),
     });
   }, []);
 
@@ -2243,7 +2313,7 @@ export function WorkplaneViewport({
           setRotationReadout({
             x: event.clientX - rect.left + 22,
             y: event.clientY - rect.top - 34,
-            text: formatMeasure(yBounds.min),
+            text: formatMeasure(yBounds.min, workspaceRef.current.accuracy),
           });
         } else {
           setRotationReadout(null);
@@ -2425,7 +2495,15 @@ export function WorkplaneViewport({
       if (threeRef.current) {
         const previewShapes = previewShapesForDrag(shapesRef.current, drag);
         updateSelectedGroundFootprintPreviews(threeRef.current, drag);
-        syncTransformOverlay(threeRef.current, previewShapes, selectedIdsRef.current, transformOverlayRef, setTransformOverlay, true);
+        syncTransformOverlay(
+          threeRef.current,
+          previewShapes,
+          selectedIdsRef.current,
+          transformOverlayRef,
+          setTransformOverlay,
+          workspaceRef.current.accuracy,
+          true,
+        );
         threeRef.current.lastOverlaySync = performance.now();
         threeRef.current.needsRender = true;
       }
@@ -2509,19 +2587,25 @@ export function WorkplaneViewport({
         event.currentTarget.releasePointerCapture(drag.pointerId);
       }
 
+      let movedShape = false;
       drag.items.forEach((item) => {
         if (item.visual && item.hadPreviewSimplified) {
           setComplexEdgeVisibility(item.visual, true);
         }
         const shape = shapesRef.current.find((entry) => entry.id === item.id);
         if (shape && (shape.x !== item.nextX || shape.z !== item.nextZ)) {
+          movedShape = true;
           onUpdateShape(item.id, { x: item.nextX, z: item.nextZ });
         }
       });
 
       dragRef.current = null;
       if (state) {
-        syncCutPreviewOverlays(state, previewShapesForDrag(shapesRef.current, drag));
+        // A moved shape triggers the shapes effect, which rebuilds this preview.
+        // Running it here as well makes cylinder/hole CSG execute twice on release.
+        if (!movedShape) {
+          syncCutPreviewOverlays(state, shapesRef.current);
+        }
         state.controls.enabled = true;
         state.needsRender = true;
       }
@@ -2750,6 +2834,7 @@ export function WorkplaneViewport({
           shape={selectedShape}
           snap={snap}
           snapOpen={snapOpen}
+          accuracy={workspace.accuracy}
           onUpdate={(patch, options) => onUpdateShape(selectedShape.id, patchWithResizeAnchor(selectedShape, patch, options?.resizeAxis, lastResizeAnchorRef.current))}
           onClose={() => onSelectShape(null)}
           onSnapChange={setSnap}
@@ -2769,6 +2854,7 @@ export function WorkplaneViewport({
           snap={snap}
           onWorkspaceChange={setWorkspace}
           onSnapChange={setSnap}
+          onMakeDefault={makeWorkspaceDefault}
           onClose={() => setSettingsOpen(false)}
         />
       ) : null}
@@ -3135,6 +3221,19 @@ function cutPreviewActualIntersectionGeometry(state: ThreeState, solid: Workplan
     return null;
   }
 
+  // Equal-height cylinders have coplanar caps. Feeding those surfaces directly
+  // to three-bvh-csg can turn a few hundred input triangles into hundreds of
+  // thousands of preview triangles. A tiny local expansion preserves the
+  // visible cut while keeping the preview topology bounded.
+  const holeScale = new THREE.Matrix4().makeScale(
+    (shapeWidth(hole) + CUT_PREVIEW_PADDING * 2) / Math.max(MIN_SHAPE_SIZE, shapeWidth(hole)),
+    (hole.height + CUT_PREVIEW_PADDING * 2) / Math.max(MIN_SHAPE_SIZE, hole.height),
+    (shapeDepth(hole) + CUT_PREVIEW_PADDING * 2) / Math.max(MIN_SHAPE_SIZE, shapeDepth(hole)),
+  );
+  const paddedHoleMatrix = holeBrush.matrix.clone().multiply(holeScale);
+  holeBrush.matrix.copy(paddedHoleMatrix);
+  holeBrush.matrixWorld.copy(paddedHoleMatrix);
+
   try {
     const result = cutPreviewEvaluator.evaluate(solidBrush, holeBrush, HOLLOW_INTERSECTION);
     const position = result.geometry.getAttribute("position");
@@ -3267,8 +3366,9 @@ function setSelectionHelpersVisible(state: ThreeState | null, visible: boolean) 
   state.needsRender = true;
 }
 
-function formatMeasure(value: number) {
-  return cleanNearZero(value).toFixed(2);
+function formatMeasure(value: number, accuracy: MeasurementAccuracy = DEFAULT_WORKSPACE.accuracy) {
+  const zeroThreshold = 0.5 * 10 ** -accuracy;
+  return cleanNearZero(value, zeroThreshold).toFixed(accuracy);
 }
 
 function makeDimensionMark(
@@ -3340,6 +3440,7 @@ function syncTransformOverlay(
   selectedIds: string[],
   overlayRef: MutableRefObject<TransformOverlayState | null>,
   setOverlay: Dispatch<SetStateAction<TransformOverlayState | null>>,
+  accuracy: MeasurementAccuracy,
   keepVisibleDuringInteraction = false,
 ) {
   if (selectedIds.length < 1) {
@@ -3455,9 +3556,9 @@ function syncTransformOverlay(
     { x1: bottom.farRight.x, y1: bottom.farRight.y, x2: bottom.farLeft.x, y2: bottom.farLeft.y },
     { x1: bottom.farLeft.x, y1: bottom.farLeft.y, x2: bottom.nearLeft.x, y2: bottom.nearLeft.y },
   ];
-  const widthLabel = formatMeasure(frame.width);
-  const depthLabel = formatMeasure(frame.depth);
-  const heightLabel = formatMeasure(frame.height);
+  const widthLabel = formatMeasure(frame.width, accuracy);
+  const depthLabel = formatMeasure(frame.depth, accuracy);
+  const heightLabel = formatMeasure(frame.height, accuracy);
   const nearOut = zFootAxis;
   const farOut = zFootAxis.clone().multiplyScalar(-1);
   const rightOut = xFootAxis;
@@ -3465,7 +3566,7 @@ function syncTransformOverlay(
   const heightHandleKey = showLowerHandles ? "bottom-height" : "top-height";
   const liftHandleKey = showLowerHandles ? "lower-shape" : "lift-shape";
   const workplaneAnchor = new THREE.Vector3(worldCenterX, 0, worldCenterZ);
-  const liftLabel = formatMeasure(worldMinY);
+  const liftLabel = formatMeasure(worldMinY, accuracy);
   const makeFootprintDimensionMark = (handleKey: string, axis: "width" | "depth") => {
     if (axis === "width") {
       const useFarSide = handleKey.includes("far") || handleKey.includes("left");

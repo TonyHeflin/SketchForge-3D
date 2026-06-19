@@ -1,10 +1,10 @@
 "use client";
 
 import { ChevronDown, ChevronUp, LockKeyhole, LockKeyholeOpen } from "lucide-react";
-import { useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
+import { useEffect, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
 import { ToolbarHideSelectedIcon } from "@/components/icons";
 import { fallbackSolidColor, resizedShapeSize, shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
-import type { GridSize, WorkplaneShape } from "@/types/sketchforge";
+import type { GridSize, MeasurementAccuracy, WorkplaneShape } from "@/types/sketchforge";
 
 const GRID_SIZES: GridSize[] = ["Off", "0.1 mm", "0.25 mm", "0.5 mm", "1.0 mm", "2.0 mm", "5.0 mm", "Brick"];
 const MIN_SHAPE_SIZE = 0.01;
@@ -73,8 +73,9 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
-function formatPanelNumber(value: number) {
-  return (Math.abs(value) < 0.005 ? 0 : value).toFixed(2);
+function formatPanelNumber(value: number, accuracy: MeasurementAccuracy) {
+  const zeroThreshold = 0.5 * 10 ** -accuracy;
+  return (Math.abs(value) < zeroThreshold ? 0 : value).toFixed(accuracy);
 }
 
 function getShapeProperties(shape: WorkplaneShape, onUpdate: ShapeInspectorUpdate): ShapePropertyConfig[] {
@@ -196,6 +197,7 @@ export function ShapeInspector({
   shape,
   snap,
   snapOpen,
+  accuracy,
   onUpdate,
   onClose,
   onSnapChange,
@@ -204,6 +206,7 @@ export function ShapeInspector({
   shape: WorkplaneShape;
   snap: GridSize;
   snapOpen: boolean;
+  accuracy: MeasurementAccuracy;
   onUpdate: ShapeInspectorUpdate;
   onClose: () => void;
   onSnapChange: Dispatch<SetStateAction<GridSize>>;
@@ -319,7 +322,7 @@ export function ShapeInspector({
               if (property.type === "select") {
                 return <SelectProperty key={property.label} {...property} disabled={locked} />;
               }
-              return <RangeProperty key={property.label} {...property} disabled={locked} />;
+              return <RangeProperty key={property.label} {...property} accuracy={accuracy} disabled={locked} />;
             })}
           </div>
         ) : null}
@@ -369,14 +372,31 @@ export function SnapGridControl({
   );
 }
 
-function RangeProperty({ label, value, min, max, step = 0.01, disabled, onChange }: RangePropertyConfig & { disabled?: boolean }) {
-  const safeValue = clamp(value, min, max);
-  const position = ((safeValue - min) / Math.max(1, max - min)) * 100;
+function RangeProperty({
+  label,
+  value,
+  min,
+  max,
+  step = 0.01,
+  accuracy,
+  disabled,
+  onChange,
+}: RangePropertyConfig & { accuracy: MeasurementAccuracy; disabled?: boolean }) {
+  const allowsAboveSliderMax = label === "Length" || label === "Width" || label === "Height";
+  const actualValue = Math.max(min, Number.isFinite(value) ? value : min);
+  const sliderValue = clamp(actualValue, min, max);
+  const position = ((sliderValue - min) / Math.max(1, max - min)) * 100;
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(formatPanelNumber(safeValue));
+  const [draft, setDraft] = useState(formatPanelNumber(actualValue, accuracy));
+  useEffect(() => {
+    if (!editing) {
+      setDraft(formatPanelNumber(actualValue, accuracy));
+    }
+  }, [accuracy, actualValue, editing]);
   const commitDraft = () => {
     const next = Number(draft);
-    onChange(clamp(Number.isFinite(next) ? next : safeValue, min, max));
+    const finiteNext = Number.isFinite(next) ? next : actualValue;
+    onChange(allowsAboveSliderMax ? Math.max(min, finiteNext) : clamp(finiteNext, min, max));
     setEditing(false);
   };
   return (
@@ -388,7 +408,7 @@ function RangeProperty({ label, value, min, max, step = 0.01, disabled, onChange
             className="range-value-input"
             type="number"
             min={min}
-            max={max}
+            max={allowsAboveSliderMax ? undefined : max}
             step={step}
             value={draft}
             autoFocus
@@ -398,7 +418,7 @@ function RangeProperty({ label, value, min, max, step = 0.01, disabled, onChange
               if (event.key === "Enter") {
                 event.currentTarget.blur();
               } else if (event.key === "Escape") {
-                setDraft(formatPanelNumber(safeValue));
+                setDraft(formatPanelNumber(actualValue, accuracy));
                 setEditing(false);
               }
             }}
@@ -410,11 +430,11 @@ function RangeProperty({ label, value, min, max, step = 0.01, disabled, onChange
                 return;
               }
               event.preventDefault();
-              setDraft(formatPanelNumber(safeValue));
+              setDraft(formatPanelNumber(actualValue, accuracy));
               setEditing(true);
             }}
           >
-            {formatPanelNumber(safeValue)}
+            {formatPanelNumber(actualValue, accuracy)}
           </output>
         )}
         <input
@@ -422,7 +442,7 @@ function RangeProperty({ label, value, min, max, step = 0.01, disabled, onChange
           min={min}
           max={max}
           step={step}
-          value={safeValue}
+          value={sliderValue}
           disabled={disabled}
           onChange={(event) => {
             const next = Number(event.currentTarget.value);

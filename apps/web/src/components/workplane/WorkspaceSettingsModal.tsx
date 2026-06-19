@@ -1,7 +1,7 @@
 "use client";
 
 import { X } from "lucide-react";
-import type { CSSProperties } from "react";
+import { useState, type CSSProperties } from "react";
 import { DEFAULT_WORKPLANE_WORKSPACE } from "@/lib/workplaneSettings";
 import type { GridSize, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
@@ -38,15 +38,21 @@ export function WorkspaceSettingsModal({
   snap,
   onWorkspaceChange,
   onSnapChange,
+  onMakeDefault,
   onClose,
 }: {
   workspace: WorkspaceSettings;
   snap: GridSize;
   onWorkspaceChange: (next: WorkspaceSettings) => void;
   onSnapChange: (next: GridSize) => void;
+  onMakeDefault: () => void;
   onClose: () => void;
 }) {
-  const patchWorkspace = (patch: Partial<WorkspaceSettings>) => onWorkspaceChange({ ...workspace, ...patch });
+  const [defaultSaved, setDefaultSaved] = useState(false);
+  const patchWorkspace = (patch: Partial<WorkspaceSettings>) => {
+    setDefaultSaved(false);
+    onWorkspaceChange({ ...workspace, ...patch });
+  };
   const setDimension = (key: "width" | "depth", value: string) => {
     const next = clamp(Number.parseFloat(value) || DEFAULT_WORKPLANE_WORKSPACE[key], MIN_WORKSPACE_SIZE, MAX_WORKSPACE_SIZE);
     patchWorkspace({ [key]: next, sizePreset: "Custom" } as Partial<WorkspaceSettings>);
@@ -122,7 +128,21 @@ export function WorkspaceSettingsModal({
             options={["1:1 (millimeters)", "1:10 (centimeters)", "1:100 (meters)", "1:1000 (meters)"]}
             onChange={(scale) => patchWorkspace({ scale })}
           />
-          <WorkspaceSelect label="Snap Grid" value={snap} options={GRID_SIZES} onChange={(next) => onSnapChange(next as GridSize)} />
+          <WorkspaceSelect
+            label="Accuracy"
+            value={`0.${"0".repeat(workspace.accuracy)}`}
+            options={["0.0", "0.00", "0.000"]}
+            onChange={(accuracy) => patchWorkspace({ accuracy: accuracy.slice(2).length as WorkspaceSettings["accuracy"] })}
+          />
+          <WorkspaceSelect
+            label="Snap Grid"
+            value={snap}
+            options={GRID_SIZES}
+            onChange={(next) => {
+              setDefaultSaved(false);
+              onSnapChange(next as GridSize);
+            }}
+          />
           <WorkspaceSelect
             label="Workplane size"
             value={workspace.sizePreset}
@@ -135,7 +155,7 @@ export function WorkspaceSettingsModal({
               <span>Width</span>
               <input
                 type="number"
-                value={workspace.width.toFixed(2)}
+                value={workspace.width.toFixed(workspace.accuracy)}
                 min={MIN_WORKSPACE_SIZE}
                 max={MAX_WORKSPACE_SIZE}
                 step={1}
@@ -146,7 +166,7 @@ export function WorkspaceSettingsModal({
               <span>Length</span>
               <input
                 type="number"
-                value={workspace.depth.toFixed(2)}
+                value={workspace.depth.toFixed(workspace.accuracy)}
                 min={MIN_WORKSPACE_SIZE}
                 max={MAX_WORKSPACE_SIZE}
                 step={1}
@@ -161,7 +181,7 @@ export function WorkspaceSettingsModal({
                 <span>Block size</span>
                 <input
                   type="number"
-                  value={workspace.gridBlockSize.toFixed(2)}
+                  value={workspace.gridBlockSize.toFixed(workspace.accuracy)}
                   min={MIN_GRID_BLOCK_SIZE}
                   max={MAX_GRID_BLOCK_SIZE}
                   step={0.5}
@@ -171,8 +191,14 @@ export function WorkspaceSettingsModal({
             </div>
           ) : null}
 
-          <button className="make-default-button" onClick={() => onWorkspaceChange(DEFAULT_WORKPLANE_WORKSPACE)}>
-            Make default
+          <button
+            className="make-default-button"
+            onClick={() => {
+              onMakeDefault();
+              setDefaultSaved(true);
+            }}
+          >
+            {defaultSaved ? "Default saved" : "Make default"}
           </button>
         </div>
       </div>

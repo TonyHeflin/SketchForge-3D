@@ -33,6 +33,7 @@ describe("workplane settings helpers", () => {
           zoomSpeed: Infinity,
           units: "Bricks",
           scale: "1:10 (centimeters)",
+          accuracy: 3,
         },
         fallback,
       ),
@@ -47,7 +48,10 @@ describe("workplane settings helpers", () => {
       cruiseShapes: false,
       units: "Bricks",
       scale: "1:10 (centimeters)",
+      accuracy: 3,
     });
+
+    expect(normalizeWorkspaceSettings({ accuracy: 9 }, fallback).accuracy).toBe(fallback.accuracy);
   });
 
   it("fingerprints workspace and snap settings together", () => {
