@@ -78,7 +78,7 @@ Requirements:
 Build and start SketchForge:
 
 ```bash
-docker compose up --build -d
+npm run docker:up
 ```
 
 Open it on the server:
@@ -96,20 +96,20 @@ http://SERVER_IP:3000/
 To use another host port:
 
 ```bash
-SKETCHFORGE_PORT=8080 docker compose up --build -d
+SKETCHFORGE_PORT=8080 npm run docker:up
 ```
 
 On PowerShell:
 
 ```powershell
 $env:SKETCHFORGE_PORT = "8080"
-docker compose up --build -d
+npm run docker:up
 ```
 
 Stop the server with:
 
 ```bash
-docker compose down
+npm run docker:down
 ```
 
 ### Manual Static Deployment (Advanced)
@@ -138,7 +138,7 @@ npm run build
 Remove-Item Env:STATIC_EXPORT
 ```
 
-The deployable files are generated in `apps/web/out`. Configure the web server to serve that directory and fall back to `index.html` for unknown application paths. [`deploy/nginx.conf`](deploy/nginx.conf) is the configuration used by the Docker image and can be adapted for a manual Nginx installation.
+The deployable files are generated in `apps/web/out`. Configure the web server to serve that directory and fall back to `index.html` for unknown application paths. [`deploy/docker/nginx.conf`](deploy/docker/nginx.conf) is the configuration used by the Docker image and can be adapted for a manual Nginx installation.
 
 The administrator must also open the chosen LAN port in the server firewall and arrange for the web server to start automatically after a reboot. For each SketchForge update, pull the new source, install dependencies, rebuild `apps/web/out`, replace the served files, and reload the web server.
 
@@ -173,6 +173,7 @@ apps/web/src/generated/     Generated Manifold runtime source
 apps/web/src/lib/           Shared utilities
 apps/web/public/assets/     Static app images, icons, logos, shape assets
 docs/media/                 README screenshots and demo videos
+deploy/docker/              Docker, Compose, and Nginx deployment files
 .github/                    Issue templates and community files
 ```
 
