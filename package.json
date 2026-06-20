@@ -1,6 +1,6 @@
 {
   "name": "sketchforge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "scripts": {
     "dev": "next dev apps/web",
@@ -11,7 +11,9 @@
     "test": "vitest run --config tests/vitest.config.ts",
     "test:watch": "vitest --config tests/vitest.config.ts",
     "perf": "vitest run --config tests/vitest.perf.config.ts --reporter verbose",
-    "ci": "npm run typecheck && npm run test"
+    "ci": "npm run typecheck && npm run test",
+    "docker:build": "docker build -t sketchforge:local .",
+    "docker:run": "docker run --rm -p 3000:80 sketchforge:local"
   },
   "dependencies": {
     "@tailwindcss/postcss": "^4.1.8",

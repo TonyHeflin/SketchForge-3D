@@ -18,6 +18,7 @@
     <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-16a34a"></a>
     <a href="https://github.com/Formsmith746/SketchForge-3D/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/Formsmith746/SketchForge-3D?style=social"></a>
     <img alt="Local first" src="https://img.shields.io/badge/local--first-no%20account-0ea5e9">
+    <img alt="Version 0.2.0" src="https://img.shields.io/badge/version-0.2.0-2563eb">
   </p>
 </div>
 
@@ -63,6 +64,83 @@ Open:
 ```text
 http://127.0.0.1:3000/
 ```
+
+## Docker / FabLab Server (Recommended)
+
+The Docker image contains a static SketchForge build served by Nginx. Projects stay in each user's browser; STL and OBJ files download through that browser. The container does not receive or store project files.
+
+Docker is the recommended server setup because it packages the correct Node build environment, static app, Nginx configuration, health check, and restart policy together. It is easier to reproduce and update than configuring each part by hand.
+
+Requirements:
+
+- Docker Engine with Docker Compose
+
+Build and start SketchForge:
+
+```bash
+docker compose up --build -d
+```
+
+Open it on the server:
+
+```text
+http://127.0.0.1:3000/
+```
+
+Other computers on the same network can use the server's LAN address:
+
+```text
+http://SERVER_IP:3000/
+```
+
+To use another host port:
+
+```bash
+SKETCHFORGE_PORT=8080 docker compose up --build -d
+```
+
+On PowerShell:
+
+```powershell
+$env:SKETCHFORGE_PORT = "8080"
+docker compose up --build -d
+```
+
+Stop the server with:
+
+```bash
+docker compose down
+```
+
+### Manual Static Deployment (Advanced)
+
+This is the harder alternative for servers where Docker cannot be used. The administrator must install and maintain Node.js, npm, Nginx or another static web server, firewall access, startup behavior, and future updates separately.
+
+Requirements:
+
+- Node.js 20 or newer
+- npm
+- Nginx, Apache, Caddy, or another static web server
+
+Create the static build on Linux or macOS:
+
+```bash
+npm ci
+STATIC_EXPORT=true npm run build
+```
+
+Create it with PowerShell on Windows:
+
+```powershell
+npm ci
+$env:STATIC_EXPORT = "true"
+npm run build
+Remove-Item Env:STATIC_EXPORT
+```
+
+The deployable files are generated in `apps/web/out`. Configure the web server to serve that directory and fall back to `index.html` for unknown application paths. [`deploy/nginx.conf`](deploy/nginx.conf) is the configuration used by the Docker image and can be adapted for a manual Nginx installation.
+
+The administrator must also open the chosen LAN port in the server firewall and arrange for the web server to start automatically after a reboot. For each SketchForge update, pull the new source, install dependencies, rebuild `apps/web/out`, replace the served files, and reload the web server.
 
 ## Development
 

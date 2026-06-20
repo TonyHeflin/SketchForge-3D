@@ -1,11 +1,12 @@
 "use client";
 
-import { X } from "lucide-react";
+import { Grid3X3, Palette, Ruler, X } from "lucide-react";
 import { useState, type CSSProperties } from "react";
 import { DEFAULT_WORKPLANE_WORKSPACE } from "@/lib/workplaneSettings";
 import type { GridSize, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
 type WorkspaceSettings = WorkplaneWorkspaceSettings;
+type WorkspaceSettingsSection = "appearance" | "measurement" | "workplane";
 
 const GRID_SIZES: GridSize[] = ["Off", "0.1 mm", "0.25 mm", "0.5 mm", "1.0 mm", "2.0 mm", "5.0 mm", "Brick"];
 const MIN_WORKSPACE_SIZE = 60;
@@ -49,6 +50,7 @@ export function WorkspaceSettingsModal({
   onClose: () => void;
 }) {
   const [defaultSaved, setDefaultSaved] = useState(false);
+  const [activeSection, setActiveSection] = useState<WorkspaceSettingsSection>("appearance");
   const patchWorkspace = (patch: Partial<WorkspaceSettings>) => {
     setDefaultSaved(false);
     onWorkspaceChange({ ...workspace, ...patch });
@@ -83,123 +85,168 @@ export function WorkspaceSettingsModal({
           </button>
         </header>
 
-        <div className="workspace-modal-body">
-          <div className="workspace-row">
-            <span>Background color</span>
-            <button
-              className="workspace-color-button"
-              style={{ "--workspace-bg": workspace.background } as CSSProperties}
-              aria-label="Background color"
-              onClick={() => patchWorkspace({ background: workspace.background === "#f8fbfc" ? "#eaf7fb" : "#f8fbfc" })}
-            />
-          </div>
-          <WorkspaceToggle label="Show shadows" checked={workspace.showShadows} onChange={(showShadows) => patchWorkspace({ showShadows })} />
-          <WorkspaceToggle label="Show grid" checked={workspace.showGrid} onChange={(showGrid) => patchWorkspace({ showGrid })} />
-          <WorkspaceToggle
-            label="Cruise when adding new shapes"
-            checked={workspace.cruiseShapes}
-            onChange={(cruiseShapes) => patchWorkspace({ cruiseShapes })}
-          />
+        <div className="workspace-modal-layout">
+          <nav className="workspace-settings-nav" aria-label="Workspace settings sections">
+            <button className={activeSection === "appearance" ? "active" : ""} aria-current={activeSection === "appearance" ? "page" : undefined} onClick={() => setActiveSection("appearance")}>
+              <Palette size={18} />
+              <span>Appearance</span>
+            </button>
+            <button className={activeSection === "measurement" ? "active" : ""} aria-current={activeSection === "measurement" ? "page" : undefined} onClick={() => setActiveSection("measurement")}>
+              <Ruler size={18} />
+              <span>Measurement</span>
+            </button>
+            <button className={activeSection === "workplane" ? "active" : ""} aria-current={activeSection === "workplane" ? "page" : undefined} onClick={() => setActiveSection("workplane")}>
+              <Grid3X3 size={18} />
+              <span>Workplane</span>
+            </button>
+          </nav>
 
-          <label className="workspace-range">
-            <span>Zoom speed</span>
-            <input
-              type="range"
-              min={1}
-              max={10}
-              value={workspace.zoomSpeed}
-              onChange={(event) => patchWorkspace({ zoomSpeed: Number(event.currentTarget.value) })}
-            />
-            <small>
-              <span>Slow</span>
-              <span>Fast</span>
-            </small>
-          </label>
+          <div className="workspace-modal-content">
+            <div className="workspace-modal-body">
+              {activeSection === "appearance" ? (
+                <>
+                  <div className="workspace-section-heading">
+                    <strong>Appearance</strong>
+                    <span>Adjust the canvas and navigation behavior.</span>
+                  </div>
+                  <div className="workspace-row">
+                    <span>Background color</span>
+                    <button
+                      className="workspace-color-button"
+                      style={{ "--workspace-bg": workspace.background } as CSSProperties}
+                      aria-label="Background color"
+                      onClick={() => patchWorkspace({ background: workspace.background === "#f8fbfc" ? "#eaf7fb" : "#f8fbfc" })}
+                    />
+                  </div>
+                  <WorkspaceToggle label="Show shadows" checked={workspace.showShadows} onChange={(showShadows) => patchWorkspace({ showShadows })} />
+                  <WorkspaceToggle label="Show grid" checked={workspace.showGrid} onChange={(showGrid) => patchWorkspace({ showGrid })} />
+                  <WorkspaceToggle
+                    label="Cruise when adding new shapes"
+                    checked={workspace.cruiseShapes}
+                    onChange={(cruiseShapes) => patchWorkspace({ cruiseShapes })}
+                  />
+                  <label className="workspace-range">
+                    <span>Zoom speed</span>
+                    <input
+                      type="range"
+                      min={1}
+                      max={10}
+                      value={workspace.zoomSpeed}
+                      onChange={(event) => patchWorkspace({ zoomSpeed: Number(event.currentTarget.value) })}
+                    />
+                    <small>
+                      <span>Slow</span>
+                      <span>Fast</span>
+                    </small>
+                  </label>
+                </>
+              ) : null}
 
-          <WorkspaceSelect
-            label="Units"
-            value={workspace.units}
-            options={["Metric (Default)", "Imperial", "Bricks"]}
-            onChange={(units) => patchWorkspace({ units })}
-          />
-          <WorkspaceSelect
-            label="Scale"
-            value={workspace.scale}
-            options={["1:1 (millimeters)", "1:10 (centimeters)", "1:100 (meters)", "1:1000 (meters)"]}
-            onChange={(scale) => patchWorkspace({ scale })}
-          />
-          <WorkspaceSelect
-            label="Accuracy"
-            value={`0.${"0".repeat(workspace.accuracy)}`}
-            options={["0.0", "0.00", "0.000"]}
-            onChange={(accuracy) => patchWorkspace({ accuracy: accuracy.slice(2).length as WorkspaceSettings["accuracy"] })}
-          />
-          <WorkspaceSelect
-            label="Snap Grid"
-            value={snap}
-            options={GRID_SIZES}
-            onChange={(next) => {
-              setDefaultSaved(false);
-              onSnapChange(next as GridSize);
-            }}
-          />
-          <WorkspaceSelect
-            label="Workplane size"
-            value={workspace.sizePreset}
-            options={WORKSPACE_SIZE_PRESETS.map((preset) => preset.label)}
-            onChange={setWorkspaceSizePreset}
-          />
+              {activeSection === "measurement" ? (
+                <>
+                  <div className="workspace-section-heading">
+                    <strong>Measurement</strong>
+                    <span>Choose units, precision, scale, and snapping.</span>
+                  </div>
+                  <WorkspaceSelect
+                    label="Units"
+                    value={workspace.units}
+                    options={["Metric (Default)", "Imperial", "Bricks"]}
+                    onChange={(units) => patchWorkspace({ units })}
+                  />
+                  <WorkspaceSelect
+                    label="Scale"
+                    value={workspace.scale}
+                    options={["1:1 (millimeters)", "1:10 (centimeters)", "1:100 (meters)", "1:1000 (meters)"]}
+                    onChange={(scale) => patchWorkspace({ scale })}
+                  />
+                  <WorkspaceSelect
+                    label="Accuracy"
+                    value={`0.${"0".repeat(workspace.accuracy)}`}
+                    options={["0.0", "0.00", "0.000"]}
+                    onChange={(accuracy) => patchWorkspace({ accuracy: accuracy.slice(2).length as WorkspaceSettings["accuracy"] })}
+                  />
+                  <WorkspaceSelect
+                    label="Snap Grid"
+                    value={snap}
+                    options={GRID_SIZES}
+                    onChange={(next) => {
+                      setDefaultSaved(false);
+                      onSnapChange(next as GridSize);
+                    }}
+                  />
+                </>
+              ) : null}
 
-          <div className="workspace-dimensions">
-            <label>
-              <span>Width</span>
-              <input
-                type="number"
-                value={workspace.width.toFixed(workspace.accuracy)}
-                min={MIN_WORKSPACE_SIZE}
-                max={MAX_WORKSPACE_SIZE}
-                step={1}
-                onChange={(event) => setDimension("width", event.currentTarget.value)}
-              />
-            </label>
-            <label>
-              <span>Length</span>
-              <input
-                type="number"
-                value={workspace.depth.toFixed(workspace.accuracy)}
-                min={MIN_WORKSPACE_SIZE}
-                max={MAX_WORKSPACE_SIZE}
-                step={1}
-                onChange={(event) => setDimension("depth", event.currentTarget.value)}
-              />
-            </label>
-          </div>
-          <WorkspaceSelect label="Grid block size" value={workspace.gridBlockPreset} options={GRID_BLOCK_PRESETS} onChange={setGridBlockPreset} />
-          {workspace.gridBlockPreset === "Custom" ? (
-            <div className="workspace-dimensions workspace-grid-dimensions">
-              <label>
-                <span>Block size</span>
-                <input
-                  type="number"
-                  value={workspace.gridBlockSize.toFixed(workspace.accuracy)}
-                  min={MIN_GRID_BLOCK_SIZE}
-                  max={MAX_GRID_BLOCK_SIZE}
-                  step={0.5}
-                  onChange={(event) => setGridBlockSize(event.currentTarget.value)}
-                />
-              </label>
+              {activeSection === "workplane" ? (
+                <>
+                  <div className="workspace-section-heading">
+                    <strong>Workplane</strong>
+                    <span>Set the plate dimensions and visible grid spacing.</span>
+                  </div>
+                  <WorkspaceSelect
+                    label="Workplane size"
+                    value={workspace.sizePreset}
+                    options={WORKSPACE_SIZE_PRESETS.map((preset) => preset.label)}
+                    onChange={setWorkspaceSizePreset}
+                  />
+                  <div className="workspace-dimensions">
+                    <label>
+                      <span>Width</span>
+                      <input
+                        type="number"
+                        value={workspace.width.toFixed(workspace.accuracy)}
+                        min={MIN_WORKSPACE_SIZE}
+                        max={MAX_WORKSPACE_SIZE}
+                        step={1}
+                        onChange={(event) => setDimension("width", event.currentTarget.value)}
+                      />
+                    </label>
+                    <label>
+                      <span>Length</span>
+                      <input
+                        type="number"
+                        value={workspace.depth.toFixed(workspace.accuracy)}
+                        min={MIN_WORKSPACE_SIZE}
+                        max={MAX_WORKSPACE_SIZE}
+                        step={1}
+                        onChange={(event) => setDimension("depth", event.currentTarget.value)}
+                      />
+                    </label>
+                  </div>
+                  <WorkspaceSelect label="Grid block size" value={workspace.gridBlockPreset} options={GRID_BLOCK_PRESETS} onChange={setGridBlockPreset} />
+                  {workspace.gridBlockPreset === "Custom" ? (
+                    <div className="workspace-dimensions workspace-grid-dimensions">
+                      <label>
+                        <span>Block size</span>
+                        <input
+                          type="number"
+                          value={workspace.gridBlockSize.toFixed(workspace.accuracy)}
+                          min={MIN_GRID_BLOCK_SIZE}
+                          max={MAX_GRID_BLOCK_SIZE}
+                          step={0.5}
+                          onChange={(event) => setGridBlockSize(event.currentTarget.value)}
+                        />
+                      </label>
+                    </div>
+                  ) : null}
+                </>
+              ) : null}
             </div>
-          ) : null}
 
-          <button
-            className="make-default-button"
-            onClick={() => {
-              onMakeDefault();
-              setDefaultSaved(true);
-            }}
-          >
-            {defaultSaved ? "Default saved" : "Make default"}
-          </button>
+            <div className="workspace-modal-footer">
+              <span>Save the current settings for this project.</span>
+              <button
+                className="make-default-button"
+                onClick={() => {
+                  onMakeDefault();
+                  setDefaultSaved(true);
+                }}
+              >
+                {defaultSaved ? "Default saved" : "Make default"}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
       <button className="workspace-modal-backdrop" aria-label="Close settings" onClick={onClose} />

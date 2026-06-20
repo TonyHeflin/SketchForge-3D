@@ -1,6 +1,6 @@
 "use client";
 
-import { Clock3, FileUp, Grid3X3, HomeIcon, List, Plus, Search, Settings, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { Clock3, EllipsisVertical, FileUp, Grid3X3, HomeIcon, List, Pencil, Plus, Search, Settings, SlidersHorizontal, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SketchForgeEditor, importedShapeFromStl } from "@/components/SketchForgeEditor";
 import { createLocalId } from "@/lib/localIds";
@@ -574,6 +574,14 @@ export default function Home() {
     });
   };
 
+  const renameProject = (projectId: string, name: string) => {
+    const nextName = name.trim().slice(0, 80);
+    if (!nextName) return;
+    setProjects((current) =>
+      current.map((project) => (project.id === projectId ? { ...project, name: nextName, updatedAt: Date.now() } : project)),
+    );
+  };
+
   if (!mounted) {
     return null;
   }
@@ -629,6 +637,7 @@ export default function Home() {
           onOpenProject={openEditor}
           onOpenSettings={() => setSettingsOpen(true)}
           onQueryChange={setQuery}
+          onRenameProject={renameProject}
           onSortModeChange={setSortMode}
           onViewModeChange={setViewMode}
           onWorkspace={openLatestProject}
@@ -645,6 +654,7 @@ export default function Home() {
             onProjectSnapshot={updateProjectSnapshot}
             onProjectWorkspaceChange={updateProjectWorkspace}
             projectId={activeProjectId}
+            projectName={activeProject?.name}
             projectRevision={activeProjectShapeEntry?.revision ?? activeProject?.revision ?? 0}
           />
         </div>
@@ -672,6 +682,7 @@ function Dashboard({
   onOpenProject,
   onOpenSettings,
   onQueryChange,
+  onRenameProject,
   onSortModeChange,
   onViewModeChange,
   onWorkspace,
@@ -694,12 +705,17 @@ function Dashboard({
   onOpenProject: (projectId: string) => void;
   onOpenSettings: () => void;
   onQueryChange: (value: string) => void;
+  onRenameProject: (projectId: string, name: string) => void;
   onSortModeChange: (value: string) => void;
   onViewModeChange: (value: ViewMode) => void;
   onWorkspace: () => void;
 }) {
+  const [openProjectMenuId, setOpenProjectMenuId] = useState<string | null>(null);
   const [projectPendingDeleteId, setProjectPendingDeleteId] = useState<string | null>(null);
+  const [projectPendingRenameId, setProjectPendingRenameId] = useState<string | null>(null);
+  const [projectNameDraft, setProjectNameDraft] = useState("");
   const projectPendingDelete = projects.find((project) => project.id === projectPendingDeleteId) ?? null;
+  const projectPendingRename = projects.find((project) => project.id === projectPendingRenameId) ?? null;
 
   useEffect(() => {
     if (!projectPendingDeleteId) return;
@@ -711,6 +727,23 @@ function Dashboard({
     if (!projectPendingDelete) return;
     onDeleteProject(projectPendingDelete.id);
     setProjectPendingDeleteId(null);
+  };
+
+  const startProjectRename = (project: DashboardProject) => {
+    setOpenProjectMenuId(null);
+    setProjectPendingRenameId(project.id);
+    setProjectNameDraft(project.name);
+  };
+
+  const closeProjectRename = () => {
+    setProjectPendingRenameId(null);
+    setProjectNameDraft("");
+  };
+
+  const confirmProjectRename = () => {
+    if (!projectPendingRename || !projectNameDraft.trim()) return;
+    onRenameProject(projectPendingRename.id, projectNameDraft);
+    closeProjectRename();
   };
 
   return (
@@ -806,9 +839,36 @@ function Dashboard({
                       {formatUpdated(project.updatedAt)} - {project.shapes} shapes
                     </span>
                   </button>
-                  <button className="project-delete" type="button" aria-label={`Delete ${project.name}`} title="Delete project" onClick={() => setProjectPendingDeleteId(project.id)}>
-                    <Trash2 size={17} strokeWidth={2.4} />
+                  <button
+                    className="project-menu-trigger"
+                    type="button"
+                    aria-label={`Project options for ${project.name}`}
+                    aria-expanded={openProjectMenuId === project.id}
+                    title="Project options"
+                    onClick={() => setOpenProjectMenuId((current) => (current === project.id ? null : project.id))}
+                  >
+                    <EllipsisVertical size={19} strokeWidth={2.5} />
                   </button>
+                  {openProjectMenuId === project.id ? (
+                    <div className="project-card-menu" role="menu" aria-label={`Options for ${project.name}`}>
+                      <button type="button" role="menuitem" onClick={() => startProjectRename(project)}>
+                        <Pencil size={16} />
+                        <span>Rename</span>
+                      </button>
+                      <button
+                        className="delete"
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setOpenProjectMenuId(null);
+                          setProjectPendingDeleteId(project.id);
+                        }}
+                      >
+                        <Trash2 size={16} />
+                        <span>Delete</span>
+                      </button>
+                    </div>
+                  ) : null}
                 </article>
               ))}
             </div>
@@ -842,6 +902,43 @@ function Dashboard({
               </button>
             </div>
           </div>
+        </section>
+      ) : null}
+
+      {projectPendingRename ? (
+        <section className="dashboard-confirm-overlay" role="dialog" aria-modal="true" aria-labelledby="rename-project-title">
+          <form
+            className="dashboard-confirm-dialog dashboard-rename-dialog"
+            onSubmit={(event) => {
+              event.preventDefault();
+              confirmProjectRename();
+            }}
+          >
+            <header>
+              <strong id="rename-project-title">Rename project</strong>
+              <button type="button" aria-label="Cancel project rename" onClick={closeProjectRename}>
+                <X size={18} />
+              </button>
+            </header>
+            <label>
+              <span>Project name</span>
+              <input
+                autoFocus
+                maxLength={80}
+                value={projectNameDraft}
+                onChange={(event) => setProjectNameDraft(event.currentTarget.value)}
+                aria-label="Project name"
+              />
+            </label>
+            <div className="dashboard-confirm-actions">
+              <button className="dashboard-confirm-cancel" type="button" onClick={closeProjectRename}>
+                Cancel
+              </button>
+              <button className="dashboard-confirm-save" type="submit" disabled={!projectNameDraft.trim()}>
+                Save
+              </button>
+            </div>
+          </form>
         </section>
       ) : null}
 

@@ -56,6 +56,7 @@ import {
   workplaneShapesEqual,
 } from "@/lib/workplaneShapes";
 import { createLocalId } from "@/lib/localIds";
+import { projectExportFileName } from "@/lib/exportNames";
 import { makeShapeFromAsset, sceneShape, toolbarShapeAssets, type ToolbarShapeAsset } from "@/lib/shapeCatalog";
 import { importedShapeFromStl, importExtensionSupported } from "@/lib/stlImport";
 import type { AlignAxis, AlignHandleStatus, AlignTarget, GridSize, ShapeAsset, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
@@ -4006,6 +4007,7 @@ export function SketchForgeEditor({
   onProjectSnapshot,
   onProjectWorkspaceChange,
   projectId,
+  projectName = "SketchForge design",
   projectRevision = 0,
 }: {
   initialShapes?: WorkplaneShape[];
@@ -4016,6 +4018,7 @@ export function SketchForgeEditor({
   onProjectSnapshot?: (snapshot: { image: string; projectId: string; shapes: number }) => void;
   onProjectWorkspaceChange?: (snapshot: { projectId: string; workspace: WorkplaneWorkspaceSettings; snap: GridSize }) => void;
   projectId?: string | null;
+  projectName?: string;
   projectRevision?: number;
 } = {}) {
   const [shapes, setShapes] = useState<WorkplaneShape[]>(() => initialShapes.map(canonicalizeShape));
@@ -4983,7 +4986,6 @@ export function SketchForgeEditor({
       return;
     }
     const meshes = exportable.map(meshForShape);
-    const scope = hasSelection ? "selection" : "design";
     const selectedNotice = `Exported ${exportable.length} selected shape${exportable.length === 1 ? "" : "s"}`;
     const finishNotice = (label: string, result: DownloadResult) => {
       if (result.mode === "folder") {
@@ -4996,15 +4998,15 @@ export function SketchForgeEditor({
       setNotice(error instanceof Error ? error.message : `Could not export ${label}`);
     };
     if (format === "stl") {
-      void downloadTextFile(`sketchforge-${scope}.stl`, toStl(meshes), "model/stl")
+      void downloadTextFile(projectExportFileName(projectName, "stl"), toStl(meshes), "model/stl")
         .then((result) => finishNotice("STL", result))
         .catch((error: unknown) => failNotice("STL", error));
       return;
     }
-    void downloadTextFile(`sketchforge-${scope}.obj`, toObj(meshes), "text/plain")
+    void downloadTextFile(projectExportFileName(projectName, "obj"), toObj(meshes), "text/plain")
       .then((result) => finishNotice("OBJ", result))
       .catch((error: unknown) => failNotice("OBJ", error));
-  }, [hasSelection, selectedShapes, shapes]);
+  }, [hasSelection, projectName, selectedShapes, shapes]);
 
   const clearDesign = useCallback(() => {
     commitShapes([], [], "New empty design");

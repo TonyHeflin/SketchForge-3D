@@ -413,7 +413,7 @@ button {
   grid-row: 1 / span 2;
 }
 
-.project-delete {
+.project-menu-trigger {
   position: absolute;
   top: 12px;
   right: 12px;
@@ -430,15 +430,59 @@ button {
   box-shadow: 0 2px 6px rgba(24, 43, 60, 0.1);
 }
 
-.project-card:hover .project-delete,
-.project-delete:focus-visible {
+.project-card:hover .project-menu-trigger,
+.project-menu-trigger:focus-visible {
   opacity: 1;
 }
 
-.project-delete:hover {
+.project-menu-trigger:hover,
+.project-menu-trigger[aria-expanded="true"] {
+  color: #264d6b;
+  border-color: #a9bdcc;
+  background: #f5f9fc;
+}
+
+.project-card-menu {
+  position: absolute;
+  top: 52px;
+  right: 12px;
+  z-index: 4;
+  display: grid;
+  width: 148px;
+  gap: 3px;
+  padding: 5px;
+  color: #314b61;
+  background: #ffffff;
+  border: 1px solid #ccd9e3;
+  border-radius: 7px;
+  box-shadow: 0 10px 28px rgba(24, 43, 60, 0.18);
+}
+
+.project-card-menu button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 36px;
+  padding: 0 10px;
+  color: inherit;
+  background: transparent;
+  border-radius: 5px;
+  font-weight: 700;
+  text-align: left;
+}
+
+.project-card-menu button:hover,
+.project-card-menu button:focus-visible {
+  background: #eef5fa;
+}
+
+.project-card-menu button.delete {
   color: #b01925;
-  border-color: #efb7be;
-  background: #fff4f5;
+}
+
+.project-card-menu button.delete:hover,
+.project-card-menu button.delete:focus-visible {
+  background: #fff1f2;
 }
 
 .dashboard-confirm-overlay {
@@ -522,6 +566,44 @@ button {
   color: #ffffff;
   border: 1px solid #c82031;
   background: #c82031;
+}
+
+.dashboard-confirm-save {
+  color: #ffffff;
+  border: 1px solid #147ca8;
+  background: #147ca8;
+}
+
+.dashboard-confirm-save:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.dashboard-rename-dialog > label {
+  display: grid;
+  gap: 7px;
+  padding: 18px;
+  color: #40586c;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.dashboard-rename-dialog input {
+  width: 100%;
+  height: 42px;
+  padding: 0 12px;
+  color: #1d3448;
+  background: #ffffff;
+  border: 1px solid #b9cad7;
+  border-radius: 6px;
+  font: inherit;
+  font-weight: 600;
+  outline: none;
+}
+
+.dashboard-rename-dialog input:focus {
+  border-color: #1486b5;
+  box-shadow: 0 0 0 3px rgba(20, 134, 181, 0.14);
 }
 
 .project-empty {
@@ -2707,9 +2789,9 @@ button {
 .workspace-modal-card {
   position: relative;
   z-index: 2;
-  width: 520px;
+  width: 760px;
   max-width: calc(100vw - 32px);
-  min-height: min(720px, calc(100vh - 104px));
+  height: min(650px, calc(100vh - 104px));
   max-height: calc(100vh - 104px);
   overflow: hidden;
   color: #264158;
@@ -2753,12 +2835,84 @@ button {
   cursor: pointer;
 }
 
+.workspace-modal-layout {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  height: calc(100% - 55px);
+  min-height: 0;
+}
+
+.workspace-settings-nav {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  padding: 16px 10px;
+  background: #f4f7f9;
+  border-right: 1px solid #d8e1e8;
+}
+
+.workspace-settings-nav button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 42px;
+  padding: 0 12px;
+  color: #526b7e;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 800;
+  text-align: left;
+}
+
+.workspace-settings-nav button:hover {
+  color: #274861;
+  background: #e9f0f4;
+}
+
+.workspace-settings-nav button.active {
+  color: #176f95;
+  background: #ffffff;
+  border-color: #c7d9e4;
+  box-shadow: 0 1px 3px rgba(31, 64, 84, 0.08);
+}
+
+.workspace-modal-content {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .workspace-modal-body {
   display: grid;
+  align-content: start;
   gap: 20px;
-  max-height: calc(100vh - 159px);
-  padding: 18px 18px 22px;
+  min-height: 0;
+  padding: 22px 24px;
   overflow: auto;
+}
+
+.workspace-section-heading {
+  display: grid;
+  gap: 5px;
+  padding-bottom: 15px;
+  border-bottom: 1px solid #e2e9ee;
+}
+
+.workspace-section-heading strong {
+  color: #213d54;
+  font-size: 17px;
+}
+
+.workspace-section-heading span {
+  color: #718697;
+  font-size: 12px;
+  font-weight: 650;
 }
 
 .workspace-row,
@@ -2858,7 +3012,9 @@ button {
 }
 
 .make-default-button {
-  height: 30px;
+  min-width: 128px;
+  height: 34px;
+  padding: 0 14px;
   color: #264158;
   background: #f7fafc;
   border: 1px solid #d6e0e8;
@@ -2868,9 +3024,18 @@ button {
   font-weight: 800;
 }
 
-.make-default-button {
-  width: 240px;
-  margin-left: 153px;
+.workspace-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 64px;
+  padding: 12px 24px;
+  color: #718697;
+  background: #fbfcfd;
+  border-top: 1px solid #dfe7ed;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .workspace-modal-header button:hover,
@@ -3333,9 +3498,26 @@ button {
   }
 
   .workspace-modal-card {
-    width: min(520px, calc(100vw - 24px));
-    min-height: calc(100vh - 112px);
+    width: min(760px, calc(100vw - 24px));
+    height: calc(100vh - 112px);
     max-height: calc(100vh - 112px);
+  }
+
+  .workspace-modal-layout {
+    grid-template-columns: 165px minmax(0, 1fr);
+  }
+
+  .workspace-settings-nav {
+    padding-inline: 8px;
+  }
+
+  .workspace-settings-nav button {
+    padding-inline: 9px;
+  }
+
+  .workspace-modal-body,
+  .workspace-modal-footer {
+    padding-inline: 18px;
   }
 
   .workplane-plane {
