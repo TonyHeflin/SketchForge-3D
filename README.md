@@ -52,14 +52,15 @@ No login. No server project storage. No heavyweight CAD install just to make a u
 
 ## Getting Started
 
-There are two common ways to run SketchForge. If you are not sure which one to choose, use Docker.
+There are three common ways to run SketchForge. If you are not sure which one to choose, use Docker.
 
 | Path | Best for | Difficulty |
 | --- | --- | --- |
 | Docker / FabLab server | Teachers, classrooms, shared computers, local network hosting | Recommended |
 | Local development | Developers who want to edit the code | Medium |
+| Electron desktop | Developers testing the native desktop wrapper and local project folder storage | Medium |
 
-SketchForge is local-first in both modes. The app files may be served from a computer or server, but projects stay in each user's browser storage. STL and OBJ exports download through the user's browser. SketchForge does not upload models to a SketchForge cloud service.
+SketchForge is local-first in every mode. The browser and Docker builds keep projects in each user's browser storage, while the Electron desktop build stores projects in a user-selected local project folder. SketchForge does not upload models to a SketchForge cloud service.
 
 ### Download the Project
 
@@ -243,6 +244,26 @@ http://127.0.0.1:3000/
 ```
 
 Leave the terminal open while you use the app. To stop the development server, press `Ctrl+C` in the terminal.
+
+### Electron Desktop Development
+
+The Electron desktop wrapper uses the same web app but stores desktop projects in ordinary files under a local project directory. For local desktop development, start the web dev server in one terminal:
+
+```bash
+npm run dev
+```
+
+Then launch Electron in a second terminal:
+
+```bash
+npm run desktop:dev
+```
+
+For production desktop artifacts, run:
+
+```bash
+npm run desktop:package
+```
 
 ### Useful Developer Commands
 

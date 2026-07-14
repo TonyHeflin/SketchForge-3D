@@ -3,9 +3,17 @@
 import { Clock3, EllipsisVertical, FileUp, Grid3X3, HomeIcon, List, Pencil, Plus, Search, Settings, SlidersHorizontal, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SketchForgeEditor, importedShapeFromStl, importedShapeFromSvg } from "@/components/SketchForgeEditor";
-import { hydrateEditorHistoryState, type EditorHistoryEntry } from "@/lib/editorHistory";
+import type { EditorHistoryEntry } from "@/lib/editorHistory";
 import { createLocalId } from "@/lib/localIds";
 import { importExtensionSupported } from "@/lib/stlImport";
+import {
+  PROJECTS_STORAGE_KEY,
+  PROJECT_ACCENTS,
+  browserProjectStorage,
+  getProjectStorage,
+  type DashboardProject,
+  type ProjectShapeCacheEntry,
+} from "@/lib/projectStorage";
 import { DEFAULT_SNAP_GRID, DEFAULT_WORKPLANE_WORKSPACE, normalizeSnapGrid, normalizeWorkspaceSettings, workplaneSettingsFingerprint } from "@/lib/workplaneSettings";
 import type { GridSize, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
@@ -14,46 +22,8 @@ type ViewMode = "grid" | "list";
 type DashboardSection = "home" | "challenges";
 type DownloadMode = "browser" | "folder";
 
-type DashboardProject = {
-  id: string;
-  name: string;
-  createdAt: number;
-  updatedAt: number;
-  shapes: number;
-  accent: "cyan" | "green" | "gold" | "red";
-  thumbnailUrl?: string | null;
-  thumbnailVersion?: number;
-  revision?: number;
-  workspace?: WorkplaneWorkspaceSettings;
-  snapGrid?: GridSize;
-};
-
-type StoredDashboardProject = Partial<DashboardProject> & {
-  designShapes?: unknown;
-};
-
-type ProjectShapeCacheEntry = {
-  revision: number;
-  shapes: WorkplaneShape[];
-  history: EditorHistoryEntry[];
-  historyIndex: number;
-};
-
-type ProjectShapeRecord = {
-  id: string;
-  revision: number;
-  shapes: WorkplaneShape[];
-  history?: EditorHistoryEntry[];
-  historyIndex?: number;
-  updatedAt: number;
-};
-
-const PROJECTS_STORAGE_KEY = "sketchForge.projects";
-const PROJECT_SHAPES_DB_NAME = "sketchForge.projectShapes";
-const PROJECT_SHAPES_STORE_NAME = "projectShapes";
 const DOWNLOAD_MODE_STORAGE_KEY = "sketchForge.downloadMode";
 const DOWNLOAD_FOLDER_STORAGE_KEY = "sketchForge.downloadFolder";
-const PROJECT_ACCENTS: DashboardProject["accent"][] = ["cyan", "green", "gold", "red"];
 const STATIC_EXPORT_BUILD = process.env.NEXT_PUBLIC_STATIC_EXPORT === "true";
 
 function formatUpdated(timestamp: number) {
@@ -62,184 +32,6 @@ function formatUpdated(timestamp: number) {
   if (age < 3_600_000) return `${Math.max(1, Math.round(age / 60_000))} min ago`;
   if (age < 86_400_000) return "Today";
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(timestamp));
-}
-
-function projectShapeCacheEntry(
-  revision: number,
-  shapes: WorkplaneShape[],
-  history?: EditorHistoryEntry[],
-  historyIndex?: number,
-): ProjectShapeCacheEntry {
-  const hydrated = hydrateEditorHistoryState(shapes, history, historyIndex);
-  return {
-    revision,
-    shapes: hydrated.entries[hydrated.index]?.shapes ?? shapes,
-    history: hydrated.entries,
-    historyIndex: hydrated.index,
-  };
-}
-
-function openProjectShapesDb() {
-  return new Promise<IDBDatabase>((resolve, reject) => {
-    if (typeof window === "undefined" || !window.indexedDB) {
-      reject(new Error("Project shape storage is unavailable"));
-      return;
-    }
-
-    const request = window.indexedDB.open(PROJECT_SHAPES_DB_NAME, 1);
-    request.onupgradeneeded = () => {
-      const database = request.result;
-      if (!database.objectStoreNames.contains(PROJECT_SHAPES_STORE_NAME)) {
-        database.createObjectStore(PROJECT_SHAPES_STORE_NAME, { keyPath: "id" });
-      }
-    };
-    request.onerror = () => reject(request.error ?? new Error("Could not open project shape storage"));
-    request.onsuccess = () => resolve(request.result);
-  });
-}
-
-async function loadProjectShapes(projectId: string) {
-  const database = await openProjectShapesDb();
-  return new Promise<ProjectShapeRecord | null>((resolve, reject) => {
-    const transaction = database.transaction(PROJECT_SHAPES_STORE_NAME, "readonly");
-    const request = transaction.objectStore(PROJECT_SHAPES_STORE_NAME).get(projectId);
-    request.onerror = () => reject(request.error ?? new Error("Could not load project shapes"));
-    request.onsuccess = () => resolve((request.result as ProjectShapeRecord | undefined) ?? null);
-    transaction.oncomplete = () => database.close();
-    transaction.onerror = () => {
-      database.close();
-      reject(transaction.error ?? new Error("Could not load project shapes"));
-    };
-  });
-}
-
-async function saveProjectShapes(projectId: string, entry: ProjectShapeCacheEntry) {
-  const database = await openProjectShapesDb();
-  return new Promise<void>((resolve, reject) => {
-    const transaction = database.transaction(PROJECT_SHAPES_STORE_NAME, "readwrite");
-    const store = transaction.objectStore(PROJECT_SHAPES_STORE_NAME);
-    const existingRequest = store.get(projectId);
-    existingRequest.onerror = () => {
-      transaction.abort();
-    };
-    existingRequest.onsuccess = () => {
-      const existing = existingRequest.result as ProjectShapeRecord | undefined;
-      if (existing && existing.revision > entry.revision) {
-        return;
-      }
-      store.put({ id: projectId, ...entry, updatedAt: Date.now() } satisfies ProjectShapeRecord);
-    };
-    transaction.oncomplete = () => {
-      database.close();
-      resolve();
-    };
-    transaction.onerror = () => {
-      database.close();
-      reject(transaction.error ?? new Error("Could not save project shapes"));
-    };
-    transaction.onabort = () => {
-      database.close();
-      reject(transaction.error ?? new Error("Could not save project shapes"));
-    };
-  });
-}
-
-async function deleteProjectShapes(projectId: string) {
-  const database = await openProjectShapesDb();
-  return new Promise<void>((resolve, reject) => {
-    const transaction = database.transaction(PROJECT_SHAPES_STORE_NAME, "readwrite");
-    transaction.objectStore(PROJECT_SHAPES_STORE_NAME).delete(projectId);
-    transaction.oncomplete = () => {
-      database.close();
-      resolve();
-    };
-    transaction.onerror = () => {
-      database.close();
-      reject(transaction.error ?? new Error("Could not delete project shapes"));
-    };
-  });
-}
-
-function readStoredProjects() {
-  const legacyShapes: Record<string, ProjectShapeCacheEntry> = {};
-  if (typeof window === "undefined") return { projects: [] as DashboardProject[], legacyShapes };
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(PROJECTS_STORAGE_KEY) ?? "[]") as StoredDashboardProject[];
-    const projects = parsed
-      .filter((project) => typeof project.id === "string" && typeof project.name === "string")
-      .map((project, index) => {
-        const id = project.id as string;
-        const updatedAt = typeof project.updatedAt === "number" ? project.updatedAt : Date.now();
-        const revision = typeof project.revision === "number" ? project.revision : updatedAt;
-        const designShapes = Array.isArray(project.designShapes) ? (project.designShapes as WorkplaneShape[]) : null;
-        if (designShapes) {
-          legacyShapes[id] = projectShapeCacheEntry(revision, designShapes);
-        }
-        return {
-          id,
-          name: project.name as string,
-          createdAt: typeof project.createdAt === "number" ? project.createdAt : Date.now(),
-          updatedAt,
-          shapes: typeof project.shapes === "number" ? project.shapes : (designShapes?.length ?? 0),
-          accent: PROJECT_ACCENTS.includes(project.accent as DashboardProject["accent"]) ? (project.accent as DashboardProject["accent"]) : PROJECT_ACCENTS[index % PROJECT_ACCENTS.length],
-          thumbnailUrl: typeof project.thumbnailUrl === "string" ? project.thumbnailUrl : null,
-          thumbnailVersion: typeof project.thumbnailVersion === "number" ? project.thumbnailVersion : undefined,
-          revision,
-          workspace: normalizeWorkspaceSettings(project.workspace),
-          snapGrid: normalizeSnapGrid(project.snapGrid),
-        };
-      });
-    return { projects, legacyShapes };
-  } catch {
-    return { projects: [], legacyShapes };
-  }
-}
-
-function readProjects() {
-  return readStoredProjects().projects;
-}
-
-function mergeProjectForStorage(project: DashboardProject, storedProject?: DashboardProject) {
-  if (!storedProject) {
-    return project;
-  }
-  const projectRevision = project.revision ?? 0;
-  const storedRevision = storedProject.revision ?? 0;
-  if (storedRevision <= projectRevision) {
-    return project;
-  }
-  return {
-    ...project,
-    revision: storedProject.revision,
-    shapes: storedProject.shapes || project.shapes,
-    thumbnailUrl: project.thumbnailUrl ?? storedProject.thumbnailUrl,
-    thumbnailVersion: project.thumbnailVersion ?? storedProject.thumbnailVersion,
-    updatedAt: Math.max(project.updatedAt, storedProject.updatedAt),
-    workspace: project.workspace ?? storedProject.workspace,
-    snapGrid: project.snapGrid ?? storedProject.snapGrid,
-  };
-}
-
-function projectForStorage(project: DashboardProject): DashboardProject {
-  return {
-    id: project.id,
-    name: project.name,
-    createdAt: project.createdAt,
-    updatedAt: project.updatedAt,
-    shapes: project.shapes,
-    accent: project.accent,
-    thumbnailUrl: project.thumbnailUrl ?? null,
-    thumbnailVersion: project.thumbnailVersion,
-    revision: project.revision,
-    workspace: normalizeWorkspaceSettings(project.workspace),
-    snapGrid: normalizeSnapGrid(project.snapGrid),
-  };
-}
-
-function mergeProjectsForStorage(projects: DashboardProject[]) {
-  const storedProjects = readProjects();
-  const storedById = new Map(storedProjects.map((project) => [project.id, project]));
-  return projects.map((project) => projectForStorage(mergeProjectForStorage(project, storedById.get(project.id))));
 }
 
 function newProject(name: string, index: number, shapeCount = 0): DashboardProject {
@@ -275,11 +67,14 @@ export default function Home() {
   const [downloadMode, setDownloadMode] = useState<DownloadMode>("browser");
   const [downloadFolder, setDownloadFolder] = useState("");
   const [dashboardNotice, setDashboardNotice] = useState("");
+  const [projectDirectory, setProjectDirectory] = useState<string | null>(null);
+  const [browserImportCandidates, setBrowserImportCandidates] = useState<DashboardProject[]>([]);
   const [projectShapesById, setProjectShapesById] = useState<Record<string, ProjectShapeCacheEntry>>({});
   const projectsJsonRef = useRef("");
   const dashboardImportInputRef = useRef<HTMLInputElement | null>(null);
   const nextProjectRevisionRef = useRef(0);
   const projectShapeSaveQueuesRef = useRef<Record<string, Promise<void>>>({});
+  const projectStorage = useMemo(() => getProjectStorage(), []);
 
   useEffect(() => {
     document.documentElement.removeAttribute("data-theme");
@@ -289,52 +84,60 @@ export default function Home() {
     } catch {
       // Light mode still applies when browser storage is unavailable.
     }
-    const { projects: storedProjects, legacyShapes } = readStoredProjects();
-    setProjects(storedProjects);
-    if (Object.keys(legacyShapes).length > 0) {
-      setProjectShapesById(legacyShapes);
-      Object.entries(legacyShapes).forEach(([projectId, entry]) => {
-        void saveProjectShapes(projectId, entry).catch(() => {
-          setDashboardNotice("Could not migrate project shapes to larger storage");
+    void projectStorage.readStoredProjects().then(({ projects: storedProjects, legacyShapes }) => {
+      setProjects(storedProjects);
+      if (Object.keys(legacyShapes).length > 0) {
+        setProjectShapesById(legacyShapes);
+        Object.entries(legacyShapes).forEach(([projectId, entry]) => {
+          void projectStorage.saveProjectShapes(projectId, entry).catch(() => {
+            setDashboardNotice("Could not migrate project shapes to larger storage");
+          });
         });
-      });
-    }
+      }
+
+      const params = new URLSearchParams(window.location.search);
+      if (params.has("codexBooleanCase") || params.get("editor") === "1") {
+        const requestedProjectId = params.get("project");
+        if (requestedProjectId && storedProjects.some((project) => project.id === requestedProjectId)) {
+          setActiveProjectId(requestedProjectId);
+        }
+        setEditorStarted(true);
+        setView("editor");
+      }
+      if (projectStorage.capabilities.supportsProjectDirectory && projectStorage.getProjectDirectory) {
+        void projectStorage.getProjectDirectory().then(setProjectDirectory).catch(() => undefined);
+      }
+      if (projectStorage.capabilities.kind === "desktop") {
+        void browserProjectStorage.readProjects().then((browserProjects) => {
+          const desktopIds = new Set(storedProjects.map((project) => project.id));
+          setBrowserImportCandidates(browserProjects.filter((project) => !desktopIds.has(project.id)));
+        }).catch(() => undefined);
+      }
+      setMounted(true);
+    }).catch((error) => {
+      setDashboardNotice(error instanceof Error ? error.message : "Could not load projects");
+      setMounted(true);
+    });
+
     setDownloadMode(!STATIC_EXPORT_BUILD && window.localStorage.getItem(DOWNLOAD_MODE_STORAGE_KEY) === "folder" ? "folder" : "browser");
     setDownloadFolder(window.localStorage.getItem(DOWNLOAD_FOLDER_STORAGE_KEY) ?? "");
-
-    const params = new URLSearchParams(window.location.search);
-    if (params.has("codexBooleanCase") || params.get("editor") === "1") {
-      const requestedProjectId = params.get("project");
-      if (requestedProjectId && storedProjects.some((project) => project.id === requestedProjectId)) {
-        setActiveProjectId(requestedProjectId);
-      }
-      setEditorStarted(true);
-      setView("editor");
-    }
-    setMounted(true);
-  }, []);
+  }, [projectStorage]);
 
   useEffect(() => {
     if (!mounted) return;
     const localSerialized = JSON.stringify(projects);
-    const storageProjects = mergeProjectsForStorage(projects);
-    const serialized = JSON.stringify(storageProjects);
-    if (projectsJsonRef.current === serialized) return;
-    try {
-      window.localStorage.setItem(PROJECTS_STORAGE_KEY, serialized);
-    } catch (error) {
-      try {
-        window.localStorage.removeItem(PROJECTS_STORAGE_KEY);
-        window.localStorage.setItem(PROJECTS_STORAGE_KEY, serialized);
-      } catch {
+    void projectStorage.saveProjects(projects)
+      .then((storageProjects) => {
+        const serialized = JSON.stringify(storageProjects);
+        if (projectsJsonRef.current === serialized) return;
+        projectsJsonRef.current = serialized;
+        if (serialized !== localSerialized) {
+          setProjects(storageProjects);
+        }
+      })
+      .catch((error) => {
         setDashboardNotice(error instanceof Error ? error.message : "Could not save project list");
-        return;
-      }
-    }
-    projectsJsonRef.current = serialized;
-    if (serialized !== localSerialized) {
-      setProjects(storageProjects);
-    }
+      });
   }, [mounted, projects]);
 
   useEffect(() => {
@@ -342,7 +145,7 @@ export default function Home() {
     const onStorage = (event: StorageEvent) => {
       if (event.key !== PROJECTS_STORAGE_KEY) return;
       projectsJsonRef.current = event.newValue ?? "[]";
-      setProjects(readProjects());
+      void projectStorage.readProjects().then(setProjects).catch((error) => setDashboardNotice(error instanceof Error ? error.message : "Could not refresh projects"));
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
@@ -366,11 +169,11 @@ export default function Home() {
     if (cached && cached.revision === activeProject.revision) return;
 
     let canceled = false;
-    void loadProjectShapes(activeProjectId)
+    void projectStorage.loadProjectShapes(activeProjectId)
       .then((record) => {
         if (canceled) return;
         const revision = activeProject.revision ?? record?.revision ?? Date.now();
-        const entry = projectShapeCacheEntry(revision, record?.shapes ?? [], record?.history, record?.historyIndex);
+        const entry = projectStorage.projectShapeCacheEntry(revision, record?.shapes ?? [], record?.history, record?.historyIndex);
         setProjectShapesById((current) => ({
           ...current,
           [activeProjectId]: entry,
@@ -381,7 +184,7 @@ export default function Home() {
           setDashboardNotice(error instanceof Error ? error.message : "Could not load project shapes");
           setProjectShapesById((current) => ({
             ...current,
-            [activeProjectId]: projectShapeCacheEntry(activeProject.revision ?? Date.now(), []),
+            [activeProjectId]: projectStorage.projectShapeCacheEntry(activeProject.revision ?? Date.now(), []),
           }));
         }
       });
@@ -402,9 +205,9 @@ export default function Home() {
     return sortMode === "name" ? [...filtered].sort((a, b) => a.name.localeCompare(b.name)) : [...filtered].sort((a, b) => b.updatedAt - a.updatedAt);
   }, [projects, query, sortMode]);
 
-  const openEditor = (projectId: string | null, options: { allowMissingFromStorage?: boolean } = {}) => {
+  const openEditor = async (projectId: string | null, options: { allowMissingFromStorage?: boolean } = {}) => {
     if (projectId && typeof window !== "undefined" && !options.allowMissingFromStorage) {
-      const storedProjects = readProjects();
+      const storedProjects = await projectStorage.readProjects();
       const storedProject = storedProjects.find((project) => project.id === projectId);
       if (!storedProject) {
         setProjects(storedProjects);
@@ -428,6 +231,24 @@ export default function Home() {
 
   const updateProjectSnapshot = useCallback((snapshot: { image: string; projectId: string; shapes: number }) => {
     const version = Date.now();
+    if (projectStorage.saveProjectThumbnail) {
+      setProjects((current) =>
+        current.map((project) => (project.id === snapshot.projectId ? { ...project, shapes: snapshot.shapes, updatedAt: version } : project)),
+      );
+      void projectStorage.saveProjectThumbnail(snapshot.projectId, snapshot.image)
+        .then((thumbnail) => {
+          setProjects((current) =>
+            current.map((project) =>
+              project.id === snapshot.projectId
+                ? { ...project, shapes: snapshot.shapes, thumbnailUrl: thumbnail.dataUrl, thumbnailVersion: thumbnail.version, updatedAt: thumbnail.version }
+                : project,
+            ),
+          );
+        })
+        .catch((error) => setDashboardNotice(error instanceof Error ? error.message : "Could not save project thumbnail"));
+      return;
+    }
+
     if (STATIC_EXPORT_BUILD) {
       setProjects((current) =>
         current.map((project) =>
@@ -464,7 +285,7 @@ export default function Home() {
           current.map((project) => (project.id === snapshot.projectId ? { ...project, shapes: snapshot.shapes, updatedAt: version } : project)),
         );
       });
-  }, []);
+  }, [projectStorage]);
 
   const updateProjectShapes = useCallback((snapshot: {
     projectId: string;
@@ -474,7 +295,7 @@ export default function Home() {
   }) => {
     const revision = Math.max(Date.now(), nextProjectRevisionRef.current + 1);
     nextProjectRevisionRef.current = revision;
-    const entry = projectShapeCacheEntry(revision, snapshot.shapes, snapshot.history, snapshot.historyIndex);
+    const entry = projectStorage.projectShapeCacheEntry(revision, snapshot.shapes, snapshot.history, snapshot.historyIndex);
     setProjectShapesById((current) => {
       const existing = current[snapshot.projectId];
       if (existing && existing.revision > revision) {
@@ -487,7 +308,7 @@ export default function Home() {
     });
 
     const previousSave = projectShapeSaveQueuesRef.current[snapshot.projectId] ?? Promise.resolve();
-    const queuedSave = previousSave.catch(() => undefined).then(() => saveProjectShapes(snapshot.projectId, entry));
+    const queuedSave = previousSave.catch(() => undefined).then(() => projectStorage.saveProjectShapes(snapshot.projectId, entry));
     projectShapeSaveQueuesRef.current[snapshot.projectId] = queuedSave;
 
     void queuedSave
@@ -538,17 +359,22 @@ export default function Home() {
     });
   }, []);
 
-  const createAndOpenProject = (name?: string) => {
+  const createAndOpenProject = async (name?: string) => {
     const project = newProject(name ?? `Untitled design ${projects.length + 1}`, projects.length);
-    setProjectShapesById((current) => ({
-      ...current,
-      [project.id]: projectShapeCacheEntry(project.revision ?? project.updatedAt, []),
-    }));
-    void saveProjectShapes(project.id, projectShapeCacheEntry(project.revision ?? project.updatedAt, [])).catch(() => {
-      setDashboardNotice("Could not prepare project shape storage");
-    });
-    setProjects((current) => [project, ...current]);
-    openEditor(project.id, { allowMissingFromStorage: true });
+    const entry = projectStorage.projectShapeCacheEntry(project.revision ?? project.updatedAt, []);
+
+    try {
+      await projectStorage.saveProjectShapes(project.id, entry);
+      const storageProjects = await projectStorage.saveProjects([project, ...projects]);
+      setProjectShapesById((current) => ({
+        ...current,
+        [project.id]: entry,
+      }));
+      setProjects(storageProjects);
+      void openEditor(project.id, { allowMissingFromStorage: true });
+    } catch (error) {
+      setDashboardNotice(error instanceof Error ? error.message : "Could not create project");
+    }
   };
 
   const importFileFromDashboard = useCallback(
@@ -565,29 +391,30 @@ export default function Home() {
           : importedShapeFromStl(file.name, await file.arrayBuffer());
         const project = newProject(projectNameFromFileName(file.name), projects.length, 1);
         const revision = project.revision ?? project.updatedAt;
-        const entry = projectShapeCacheEntry(revision, [shape]);
-        await saveProjectShapes(project.id, entry);
+        const entry = projectStorage.projectShapeCacheEntry(revision, [shape]);
+        await projectStorage.saveProjectShapes(project.id, entry);
+        const storageProjects = await projectStorage.saveProjects([project, ...projects]);
         setProjectShapesById((current) => ({
           ...current,
           [project.id]: entry,
         }));
         setDashboardNotice(`Imported ${file.name}`);
-        setProjects((current) => [project, ...current]);
-        openEditor(project.id, { allowMissingFromStorage: true });
+        setProjects(storageProjects);
+        void openEditor(project.id, { allowMissingFromStorage: true });
       } catch (error) {
         setDashboardNotice(error instanceof Error ? error.message : `Could not import ${file.name}`);
       }
     },
-    [projects.length],
+    [projects],
   );
 
   const openLatestProject = () => {
     const latest = [...projects].sort((a, b) => b.updatedAt - a.updatedAt)[0];
     if (latest) {
-      openEditor(latest.id);
+      void openEditor(latest.id);
       return;
     }
-    createAndOpenProject();
+    void createAndOpenProject();
   };
 
   const openDashboard = () => {
@@ -601,30 +428,82 @@ export default function Home() {
     }
   };
 
-  const deleteProject = (projectId: string) => {
-    setProjects((current) => current.filter((project) => project.id !== projectId));
-    setProjectShapesById((current) => {
-      const next = { ...current };
-      delete next[projectId];
-      return next;
-    });
-    if (activeProjectId === projectId) {
-      setActiveProjectId(null);
+  const deleteProject = async (projectId: string) => {
+    try {
+      await projectStorage.deleteProjectShapes(projectId);
+      const storageProjects = await projectStorage.saveProjects(projects.filter((project) => project.id !== projectId));
+      setProjects(storageProjects);
+      setProjectShapesById((current) => {
+        const next = { ...current };
+        delete next[projectId];
+        return next;
+      });
+      if (activeProjectId === projectId) {
+        setActiveProjectId(null);
+      }
+      if (projectStorage.deleteProjectThumbnail) {
+        void projectStorage.deleteProjectThumbnail(projectId).catch(() => undefined);
+      } else if (!STATIC_EXPORT_BUILD) {
+        void fetch(`/api/project-thumbnail?projectId=${encodeURIComponent(projectId)}`, { method: "DELETE" });
+      }
+    } catch (error) {
+      setDashboardNotice(error instanceof Error ? error.message : "Could not delete project");
     }
-    if (!STATIC_EXPORT_BUILD) {
-      void fetch(`/api/project-thumbnail?projectId=${encodeURIComponent(projectId)}`, { method: "DELETE" });
-    }
-    void deleteProjectShapes(projectId).catch(() => {
-      setDashboardNotice("Could not delete project shapes from local storage");
-    });
   };
 
-  const renameProject = (projectId: string, name: string) => {
+  const renameProject = async (projectId: string, name: string) => {
     const nextName = name.trim().slice(0, 80);
     if (!nextName) return;
-    setProjects((current) =>
-      current.map((project) => (project.id === projectId ? { ...project, name: nextName, updatedAt: Date.now() } : project)),
-    );
+    const renamedProjects = projects.map((project) => (project.id === projectId ? { ...project, name: nextName, updatedAt: Date.now() } : project));
+    try {
+      const storageProjects = await projectStorage.saveProjects(renamedProjects);
+      setProjects(storageProjects);
+    } catch (error) {
+      setDashboardNotice(error instanceof Error ? error.message : "Could not rename project");
+    }
+  };
+
+  const importBrowserProjects = async () => {
+    if (projectStorage.capabilities.kind !== "desktop" || browserImportCandidates.length === 0) return;
+    try {
+      for (const project of browserImportCandidates) {
+        const record = await browserProjectStorage.loadProjectShapes(project.id);
+        const entry = projectStorage.projectShapeCacheEntry(
+          project.revision ?? project.updatedAt,
+          record?.shapes ?? [],
+          record?.history,
+          record?.historyIndex,
+        );
+        await projectStorage.saveProjectShapes(project.id, entry);
+      }
+      await projectStorage.saveProjects(browserImportCandidates);
+      const { projects: storedProjects } = await projectStorage.readStoredProjects();
+      setProjects(storedProjects);
+      setBrowserImportCandidates([]);
+      setDashboardNotice(`Imported ${browserImportCandidates.length} browser project${browserImportCandidates.length === 1 ? "" : "s"}`);
+    } catch (error) {
+      setDashboardNotice(error instanceof Error ? error.message : "Could not import browser projects");
+    }
+  };
+
+  const changeProjectDirectory = async () => {
+    if (!projectStorage.chooseProjectDirectory) return;
+    try {
+      const nextDirectory = await projectStorage.chooseProjectDirectory();
+      if (!nextDirectory) return;
+      setProjectDirectory(nextDirectory);
+      const { projects: storedProjects } = await projectStorage.readStoredProjects();
+      setProjects(storedProjects);
+      const browserProjects = await browserProjectStorage.readProjects();
+      const desktopIds = new Set(storedProjects.map((project) => project.id));
+      setBrowserImportCandidates(browserProjects.filter((project) => !desktopIds.has(project.id)));
+      setProjectShapesById({});
+      setActiveProjectId(null);
+      setView("dashboard");
+      setDashboardNotice(`Project folder changed to ${nextDirectory}`);
+    } catch (error) {
+      setDashboardNotice(error instanceof Error ? error.message : "Could not change project folder");
+    }
   };
 
   if (!mounted) {
@@ -665,30 +544,35 @@ export default function Home() {
       {view === "dashboard" ? (
         <Dashboard
           dashboardSection={dashboardSection}
+          browserImportCount={browserImportCandidates.length}
           dashboardNotice={dashboardNotice}
           downloadFolder={downloadFolder}
           downloadMode={downloadMode}
+          projectDirectory={projectDirectory}
+          projectDirectorySupported={projectStorage.capabilities.supportsProjectDirectory}
           projects={visibleProjects}
           query={query}
           settingsOpen={settingsOpen}
           staticExportBuild={STATIC_EXPORT_BUILD}
           sortMode={sortMode}
           viewMode={viewMode}
+          onChangeProjectDirectory={() => void changeProjectDirectory()}
           onCloseSettings={() => setSettingsOpen(false)}
-          onCreate={() => createAndOpenProject()}
-          onDeleteProject={deleteProject}
+          onCreate={() => void createAndOpenProject()}
+          onDeleteProject={(projectId) => void deleteProject(projectId)}
           onDownloadFolderChange={setDownloadFolder}
           onDownloadModeChange={setDownloadMode}
+          onImportBrowserProjects={() => void importBrowserProjects()}
           onImportFile={() => dashboardImportInputRef.current?.click()}
           onChallenges={() => {
             setDashboardSection("challenges");
             setDashboardNotice("");
           }}
           onDashboardHome={() => setDashboardSection("home")}
-          onOpenProject={openEditor}
+          onOpenProject={(projectId) => void openEditor(projectId)}
           onOpenSettings={() => setSettingsOpen(true)}
           onQueryChange={setQuery}
-          onRenameProject={renameProject}
+          onRenameProject={(projectId, name) => void renameProject(projectId, name)}
           onSortModeChange={setSortMode}
           onViewModeChange={setViewMode}
           onWorkspace={openLatestProject}
@@ -718,20 +602,25 @@ export default function Home() {
 
 function Dashboard({
   dashboardSection,
+  browserImportCount,
   dashboardNotice,
   downloadFolder,
   downloadMode,
+  projectDirectory,
+  projectDirectorySupported,
   projects,
   query,
   settingsOpen,
   staticExportBuild,
   sortMode,
   viewMode,
+  onChangeProjectDirectory,
   onCloseSettings,
   onCreate,
   onDeleteProject,
   onDownloadFolderChange,
   onDownloadModeChange,
+  onImportBrowserProjects,
   onImportFile,
   onChallenges,
   onDashboardHome,
@@ -744,20 +633,25 @@ function Dashboard({
   onWorkspace,
 }: {
   dashboardSection: DashboardSection;
+  browserImportCount: number;
   dashboardNotice: string;
   downloadFolder: string;
   downloadMode: DownloadMode;
+  projectDirectory: string | null;
+  projectDirectorySupported: boolean;
   projects: DashboardProject[];
   query: string;
   settingsOpen: boolean;
   staticExportBuild: boolean;
   sortMode: string;
   viewMode: ViewMode;
+  onChangeProjectDirectory: () => void;
   onCloseSettings: () => void;
   onCreate: () => void;
   onDeleteProject: (projectId: string) => void;
   onDownloadFolderChange: (value: string) => void;
   onDownloadModeChange: (value: DownloadMode) => void;
+  onImportBrowserProjects: () => void;
   onImportFile: () => void;
   onChallenges: () => void;
   onDashboardHome: () => void;
@@ -834,7 +728,7 @@ function Dashboard({
               <span>Challenges</span>
             </button>
           </div>
-          <button className="dashboard-nav-item dashboard-settings-button" type="button" aria-label="Download settings" title="Download settings" onClick={onOpenSettings}>
+          <button className="dashboard-nav-item dashboard-settings-button" type="button" aria-label="Settings" title="Download settings" onClick={onOpenSettings}>
             <Settings size={20} />
             <span>Settings</span>
           </button>
@@ -870,6 +764,14 @@ function Dashboard({
               {dashboardNotice ? (
                 <div className="dashboard-import-notice" role="status">
                   {dashboardNotice}
+                </div>
+              ) : null}
+              {browserImportCount > 0 ? (
+                <div className="dashboard-import-notice dashboard-import-action" role="status">
+                  <span>{browserImportCount} browser project{browserImportCount === 1 ? "" : "s"} can be imported into this desktop folder.</span>
+                  <button type="button" onClick={onImportBrowserProjects}>
+                    Import
+                  </button>
                 </div>
               ) : null}
 
@@ -1014,13 +916,24 @@ function Dashboard({
       ) : null}
 
       {settingsOpen ? (
-        <section className="dashboard-settings-panel" role="dialog" aria-modal="true" aria-label="Download settings">
+        <section className="dashboard-settings-panel" role="dialog" aria-modal="true" aria-label="Settings">
           <header>
-            <strong>Download settings</strong>
+            <strong>Settings</strong>
             <button type="button" aria-label="Close download settings" onClick={onCloseSettings}>
               <X size={18} />
             </button>
           </header>
+          {projectDirectorySupported ? (
+            <div className="dashboard-setting-row">
+              <span>Project folder</span>
+              <div className="dashboard-setting-stack">
+                <code>{projectDirectory ?? "Loading..."}</code>
+                <button type="button" onClick={onChangeProjectDirectory}>
+                  Change folder
+                </button>
+              </div>
+            </div>
+          ) : null}
           <label className="dashboard-setting-row">
             <span>Save method</span>
             <select
