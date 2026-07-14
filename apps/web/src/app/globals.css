@@ -305,6 +305,24 @@ button {
   font-weight: 800;
 }
 
+.dashboard-import-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dashboard-import-action button {
+  flex: 0 0 auto;
+  height: 32px;
+  padding: 0 12px;
+  color: #ffffff;
+  background: #2d6f9f;
+  border-radius: 6px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
 .dashboard-section-header {
   display: flex;
   min-width: 0;
@@ -820,6 +838,37 @@ button {
   background: #ffffff;
   font: inherit;
   font-weight: 600;
+}
+
+.dashboard-setting-stack {
+  display: grid;
+  gap: 8px;
+}
+
+.dashboard-setting-stack code {
+  display: block;
+  overflow: hidden;
+  padding: 9px 10px;
+  color: #263f57;
+  background: #f3f7fa;
+  border: 1px solid #ccd9e3;
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-setting-stack button {
+  justify-self: start;
+  height: 34px;
+  padding: 0 12px;
+  color: #ffffff;
+  background: #2d6f9f;
+  border-radius: 6px;
+  font-weight: 800;
+  cursor: pointer;
 }
 
 .dashboard-setting-row input:disabled {

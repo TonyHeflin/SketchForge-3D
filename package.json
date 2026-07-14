@@ -9,7 +9,7 @@
     "dev": "next dev apps/web",
     "prebuild": "npm run copy:occt",
     "build": "next build apps/web",
-    "export": "set STATIC_EXPORT=true&& next build apps/web && node scripts/verify-static-worker-assets.mjs",
+    "export": "cross-env STATIC_EXPORT=true next build apps/web && node scripts/verify-static-worker-assets.mjs",
     "verify:static-worker-assets": "node scripts/verify-static-worker-assets.mjs",
     "start": "next start apps/web",
     "typecheck": "tsc -p apps/web/tsconfig.json --noEmit",
@@ -22,7 +22,12 @@
     "docker:run": "docker run --rm -p 3000:80 sketchforge:local",
     "docker:up": "docker compose -f deploy/docker/compose.yaml up --build -d",
     "docker:down": "docker compose -f deploy/docker/compose.yaml down",
-    "mcp:sketchforge": "node scripts/sketchforge-mcp-server.mjs"
+    "mcp:sketchforge": "node scripts/sketchforge-mcp-server.mjs",
+    "desktop:typecheck": "tsc -p desktop/tsconfig.json --noEmit",
+    "desktop:compile": "tsc -p desktop/tsconfig.json",
+    "desktop:dev": "npm run desktop:compile && cross-env SKETCHFORGE_DESKTOP_DEV_URL=http://localhost:3000 electron desktop/dist/main.js",
+    "desktop:build": "npm run export && npm run desktop:compile",
+    "desktop:package": "npm run desktop:build && electron-builder --config desktop/electron-builder.yml"
   },
   "dependencies": {
     "@tailwindcss/postcss": "^4.1.8",
@@ -44,7 +49,11 @@
     "@types/node": "^22.15.18",
     "@types/react": "^19.1.4",
     "@types/react-dom": "^19.1.5",
+    "cross-env": "^10.1.0",
+    "electron": "^43.1.0",
+    "electron-builder": "^26.15.3",
     "typescript": "^5.8.3",
     "vitest": "^4.1.8"
-  }
+  },
+  "main": "desktop/dist/main.js"
 }

@@ -1,0 +1,16 @@
+appId: com.sketchforge.desktop
+productName: SketchForge
+files:
+  - desktop/dist/**
+  - apps/web/out/**
+  - package.json
+directories:
+  output: release/desktop
+mac:
+  target: dmg
+win:
+  target: nsis
+linux:
+  target:
+    - AppImage
+  category: Graphics
